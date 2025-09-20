@@ -1,0 +1,27 @@
+# Main component CMakeLists.txt
+idf_component_register(
+    SRCS
+        "main.c"
+        "device_mode.c"
+        "wifi_manager.c"
+        "https_server.c"
+        "auth_manager.c"
+        "crypto_manager.c"
+        "storage_manager.c"
+        "policy_engine.c"
+        "rate_limiter.c"
+        "api_handlers.c"
+    INCLUDE_DIRS
+        "."
+        "include"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_http_server
+        mbedtls
+        esp_https_server
+        json
+        spiffs
+        esp_timer
+)

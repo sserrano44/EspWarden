@@ -1,0 +1,88 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig
+sdkconfig.old
+.vscode/
+.devcontainer/
+
+# Secure Boot and Flash Encryption Keys (NEVER COMMIT THESE!)
+keys/
+*.pem
+*.key
+*.bin
+bootloader-signed.bin
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+package-lock.json
+yarn.lock
+
+# Build artifacts
+client/dist/
+client/*.tgz
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+.nyc_output
+
+# Test artifacts
+.pytest_cache/
+test-results/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Documentation build
+docs/_build/
+
+# Backup files
+*.backup
+*.bak
+
+# Certificate files (use proper cert generation in production)
+*.crt
+*.cert
+
+# Configuration files with secrets
+config.json
+secrets.json
