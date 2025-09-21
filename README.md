@@ -19,7 +19,24 @@ This is **NOT** a tamper-proof HSM. This device is suitable for hot balances wit
 
 ## Quick Start
 
-### Hardware Setup
+### Option 1: Emulator (No Hardware Required)
+
+Run the firmware in QEMU emulator for development and testing:
+
+```bash
+# Install QEMU ESP32 (macOS)
+make install-qemu-macos
+
+# Build and run in emulator
+make emulator-setup
+
+# Or run in provisioning mode
+make emulator-run-provisioning
+```
+
+See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
+
+### Option 2: Hardware Setup
 
 1. **Required Hardware:**
    - ESP32 NodeMCU-32S (or compatible with Secure Boot support)

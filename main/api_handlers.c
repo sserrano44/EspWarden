@@ -3,6 +3,7 @@
 #include "esp32_signer.h"
 #include "device_mode.h"
 #include "wifi_manager.h"
+#include "auth_manager.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include <string.h>
@@ -13,10 +14,14 @@ esp_err_t api_handle_health(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /health request");
 
+    // Get current nonce from auth manager
+    char nonce_hex[NONCE_SIZE * 2 + 1];
+    auth_manager_get_nonce(nonce_hex, sizeof(nonce_hex));
+
     cJSON *json = cJSON_CreateObject();
     cJSON *status = cJSON_CreateString("OK");
-    cJSON *nonce = cJSON_CreateString("placeholder_nonce_123456789abcdef");
-    cJSON *rate_remaining = cJSON_CreateNumber(10);
+    cJSON *nonce = cJSON_CreateString(nonce_hex);
+    cJSON *rate_remaining = cJSON_CreateNumber(10);  // TODO: Get from rate limiter
 
     cJSON_AddItemToObject(json, "status", status);
     cJSON_AddItemToObject(json, "nonce", nonce);
@@ -91,22 +96,63 @@ esp_err_t api_handle_unlock(httpd_req_t *req)
                                  "Invalid JSON in request body", NULL);
     }
 
-    cJSON *client_id = cJSON_GetObjectItem(json, "clientId");
-    cJSON *hmac = cJSON_GetObjectItem(json, "hmac");
+    cJSON *client_id_json = cJSON_GetObjectItem(json, "clientId");
+    cJSON *hmac_json = cJSON_GetObjectItem(json, "hmac");
+    cJSON *nonce_json = cJSON_GetObjectItem(json, "nonce");
 
-    if (!cJSON_IsString(client_id) || !cJSON_IsString(hmac)) {
+    if (!cJSON_IsString(client_id_json) || !cJSON_IsString(hmac_json)) {
         cJSON_Delete(json);
         return send_error_response(req, 400, "MISSING_FIELDS",
                                  "Missing clientId or hmac fields", NULL);
     }
 
-    // TODO: Implement actual HMAC verification
-    ESP_LOGI(TAG, "Unlock request from client: %s", client_id->valuestring);
+    const char *client_id = client_id_json->valuestring;
+    const char *hmac = hmac_json->valuestring;
+    const char *nonce = nonce_json ? nonce_json->valuestring : "";
 
-    // Return temporary token
+    // Check if auth is configured
+    if (!auth_manager_is_configured()) {
+        ESP_LOGW(TAG, "Authentication not configured - accepting any request");
+        // For initial setup, accept any request
+    } else {
+        // Verify HMAC
+        ESP_LOGI(TAG, "Verifying HMAC for client: %s", client_id);
+
+        // Get the current nonce if not provided
+        char current_nonce[NONCE_SIZE * 2 + 1];
+        if (strlen(nonce) == 0) {
+            auth_manager_get_nonce(current_nonce, sizeof(current_nonce));
+            nonce = current_nonce;
+        }
+
+        // Verify HMAC(nonce || "POST" || "/unlock" || body)
+        esp_err_t verify_result = auth_manager_verify_hmac(
+            client_id, nonce, "POST", "/unlock", buf, hmac
+        );
+
+        if (verify_result != ESP_OK) {
+            cJSON_Delete(json);
+            return send_error_response(req, 401, "AUTH_FAILED",
+                                     "HMAC verification failed", "INVALID_HMAC");
+        }
+    }
+
+    ESP_LOGI(TAG, "Authentication successful for client: %s", client_id);
+
+    // Create session token
+    char token_hex[SESSION_TOKEN_SIZE * 2 + 1];
+    esp_err_t err = auth_manager_create_session(client_id, token_hex, sizeof(token_hex));
+
+    if (err != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "SESSION_ERROR",
+                                 "Failed to create session", NULL);
+    }
+
+    // Return session token
     cJSON *response = cJSON_CreateObject();
-    cJSON *token = cJSON_CreateString("temp_token_123456789abcdef0123456789abcdef");
-    cJSON *ttl = cJSON_CreateNumber(60);
+    cJSON *token = cJSON_CreateString(token_hex);
+    cJSON *ttl = cJSON_CreateNumber(SESSION_TTL_SECONDS);
 
     cJSON_AddItemToObject(response, "token", token);
     cJSON_AddItemToObject(response, "ttl", ttl);
@@ -187,9 +233,62 @@ esp_err_t api_handle_auth_config(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /auth configuration request");
 
-    // TODO: Implement auth key derivation and storage
-    return send_error_response(req, 501, "NOT_IMPLEMENTED",
-                             "Auth configuration not yet implemented", NULL);
+    // Read request body
+    char buf[256];
+    int total_len = req->content_len;
+    int cur_len = 0;
+    int received = 0;
+
+    if (total_len >= sizeof(buf)) {
+        return send_error_response(req, 400, "PAYLOAD_TOO_LARGE",
+                                 "Request payload too large", NULL);
+    }
+
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len - cur_len);
+        if (received <= 0) {
+            return send_error_response(req, 400, "INVALID_REQUEST",
+                                     "Failed to receive request body", NULL);
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    // Parse JSON
+    cJSON *json = cJSON_Parse(buf);
+    if (json == NULL) {
+        return send_error_response(req, 400, "INVALID_JSON",
+                                 "Invalid JSON in request body", NULL);
+    }
+
+    cJSON *password = cJSON_GetObjectItem(json, "password");
+    if (!cJSON_IsString(password)) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "MISSING_FIELDS",
+                                 "Missing password field", NULL);
+    }
+
+    // Set the auth key
+    esp_err_t ret = auth_manager_set_auth_key(password->valuestring);
+    cJSON_Delete(json);
+
+    if (ret != ESP_OK) {
+        return send_error_response(req, 500, "AUTH_CONFIG_FAILED",
+                                 "Failed to configure authentication", NULL);
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON *success = cJSON_CreateBool(true);
+    cJSON_AddItemToObject(response, "success", success);
+
+    char *response_string = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_string);
+
+    free(response_string);
+    cJSON_Delete(response);
+
+    ESP_LOGI(TAG, "Authentication configured successfully");
+    return send_ret;
 }
 
 esp_err_t api_handle_key_config(httpd_req_t *req)

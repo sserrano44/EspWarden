@@ -48,6 +48,28 @@ dev-setup: dev-build flash monitor
 # All-in-one production setup
 prod-setup: generate-keys prod-build flash-secure
 
+# Emulator build and run
+emulator-build:
+	@echo "Building for emulator..."
+	cp sdkconfig.emulator sdkconfig.defaults
+	idf.py build
+
+emulator-run:
+	@echo "Starting emulator..."
+	./scripts/run_emulator.sh
+
+emulator-run-provisioning:
+	@echo "Starting emulator in provisioning mode..."
+	./scripts/run_emulator.sh --provisioning
+
+emulator-setup: emulator-build emulator-run
+
+# Install QEMU ESP32 (macOS)
+install-qemu-macos:
+	@echo "Installing QEMU ESP32 for macOS..."
+	brew tap espressif/tap
+	brew install qemu-esp32
+
 help:
 	@echo "Available targets:"
 	@echo "  build       - Build the project"
@@ -61,3 +83,8 @@ help:
 	@echo "  flash-secure - Flash with secure boot"
 	@echo "  dev-setup   - Complete development setup"
 	@echo "  prod-setup  - Complete production setup"
+	@echo "  emulator-build - Build for emulator"
+	@echo "  emulator-run - Run in emulator (signing mode)"
+	@echo "  emulator-run-provisioning - Run in emulator (provisioning mode)"
+	@echo "  emulator-setup - Build and run in emulator"
+	@echo "  install-qemu-macos - Install QEMU ESP32 on macOS"

@@ -9,6 +9,7 @@
 #include "device_mode.h"
 #include "wifi_manager.h"
 #include "https_server.h"
+#include "auth_manager.h"
 
 static const char *TAG = "ESP32_SIGNER";
 
@@ -61,8 +62,10 @@ esp_err_t signer_init(void)
     // Initialize device mode detection
     ESP_ERROR_CHECK(device_mode_init());
 
+    // Initialize authentication manager
+    ESP_ERROR_CHECK(auth_manager_init());
+
     // Initialize other components will be added here
-    // ESP_ERROR_CHECK(auth_manager_init());
     // ESP_ERROR_CHECK(crypto_manager_init());
     // ESP_ERROR_CHECK(storage_manager_init());
     // ESP_ERROR_CHECK(policy_engine_init());
