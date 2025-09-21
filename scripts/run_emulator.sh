@@ -63,34 +63,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check if QEMU is installed
-if ! command -v qemu-system-xtensa &> /dev/null && [ ! -f "$QEMU_ESP32_PATH" ]; then
-    echo -e "${RED}Error: QEMU for ESP32 not found!${NC}"
-    echo ""
-    echo "Please install QEMU ESP32 first:"
-    echo ""
-    echo "Method 1: Install via ESP-IDF tools (recommended):"
-    echo "  brew install libgcrypt glib pixman sdl2 libslirp"
-    echo "  idf_tools.py install qemu-xtensa qemu-riscv32"
-    echo "  . ~/esp/esp-idf/export.sh"
-    echo ""
-    echo "Method 2: Use ESP-IDF's built-in QEMU command:"
-    echo "  idf.py qemu monitor"
-    echo ""
-    echo "Or set QEMU_ESP32_PATH environment variable if installed elsewhere:"
-    echo "  export QEMU_ESP32_PATH=/path/to/qemu-system-xtensa"
-    exit 1
-fi
-
-# Find QEMU executable
-if [ -f "$QEMU_ESP32_PATH" ]; then
-    QEMU_BIN="$QEMU_ESP32_PATH"
-elif command -v qemu-system-xtensa &> /dev/null; then
-    QEMU_BIN="qemu-system-xtensa"
-else
-    echo -e "${RED}Error: Cannot find QEMU executable${NC}"
-    exit 1
-fi
+# Note: QEMU detection is handled by ESP-IDF's idf.py qemu command
+# No need for manual QEMU detection since we use ESP-IDF integration
 
 # Build firmware if requested
 if [ "$SHOULD_BUILD" = "1" ]; then
@@ -111,63 +85,61 @@ if [ ! -f "$FIRMWARE_BIN" ]; then
     exit 1
 fi
 
-# Prepare QEMU arguments
-QEMU_ARGS=(
-    -M esp32
-    -m 4M
-    -kernel "$BUILD_DIR/bootloader/bootloader.bin"
-    -drive file="$BUILD_DIR/esp32-remote-signer.bin",if=mtd,format=raw
-    -nic user,model=esp32_wifi,hostfwd=tcp::8443-:443
-    -serial stdio
-    -display none
-)
+# Source ESP-IDF environment if not already sourced
+if [ -z "$IDF_PATH" ]; then
+    if [ -f "$HOME/esp/esp-idf/export.sh" ]; then
+        echo -e "${GREEN}Sourcing ESP-IDF environment...${NC}"
+        . "$HOME/esp/esp-idf/export.sh" > /dev/null 2>&1
+    else
+        echo -e "${RED}Error: ESP-IDF environment not found${NC}"
+        echo "Please source ESP-IDF: . ~/esp/esp-idf/export.sh"
+        exit 1
+    fi
+fi
 
-# Add GPIO simulation for provisioning mode
+# Use ESP-IDF's QEMU integration for best compatibility
+echo -e "${GREEN}Starting QEMU using ESP-IDF integration...${NC}"
+
+# Build QEMU command based on mode
 if [ "$GPIO_PROVISIONING_MODE" = "1" ]; then
-    # Simulate GPIO 2 and 4 pulled low (provisioning mode)
-    QEMU_ARGS+=(-global esp32.gpio2.level=0)
-    QEMU_ARGS+=(-global esp32.gpio4.level=0)
-else
-    # Simulate GPIO 2 and 4 pulled high (signing mode)
-    QEMU_ARGS+=(-global esp32.gpio2.level=1)
-    QEMU_ARGS+=(-global esp32.gpio4.level=1)
+    echo -e "${YELLOW}Provisioning mode: GPIO simulation not fully supported in ESP-IDF QEMU${NC}"
+    echo -e "${YELLOW}Application will start in normal mode - use software configuration${NC}"
 fi
 
 # Add debug options if requested
 if [ "$DEBUG_MODE" = "1" ]; then
-    QEMU_ARGS+=(-s -S)
-    echo -e "${YELLOW}Debug mode enabled. GDB server listening on port 1234${NC}"
+    echo -e "${YELLOW}Debug mode enabled${NC}"
+    QEMU_EXTRA_ARGS="-s -S"
     echo "Connect with: xtensa-esp32-elf-gdb -ex 'target remote :1234'"
+    idf.py qemu --qemu-extra-args="$QEMU_EXTRA_ARGS" &
+    QEMU_PID=$!
+else
+    # Start QEMU without monitor for background operation
+    idf.py qemu &
+    QEMU_PID=$!
 fi
 
-# Create virtual flash image if it doesn't exist
-FLASH_IMG="${BUILD_DIR}/flash_image.bin"
-if [ ! -f "$FLASH_IMG" ]; then
-    echo -e "${GREEN}Creating virtual flash image...${NC}"
+# Wait a moment for QEMU to start
+sleep 2
 
-    # Create a 4MB flash image
-    dd if=/dev/zero of="$FLASH_IMG" bs=1M count=4 2>/dev/null
+echo -e "${GREEN}QEMU started (PID: $QEMU_PID)${NC}"
+echo "Serial connection available on socket://localhost:5555"
+echo ""
+echo "To connect to serial:"
+echo "  nc localhost 5555"
+echo "  or: idf.py monitor -p socket://localhost:5555"
+echo ""
+echo "To stop QEMU:"
+echo "  kill $QEMU_PID"
+echo ""
 
-    # Write bootloader at 0x1000
-    dd if="${BUILD_DIR}/bootloader/bootloader.bin" of="$FLASH_IMG" bs=1 seek=$((0x1000)) conv=notrunc 2>/dev/null
-
-    # Write partition table at 0x8000
-    dd if="${BUILD_DIR}/partition_table/partition-table.bin" of="$FLASH_IMG" bs=1 seek=$((0x8000)) conv=notrunc 2>/dev/null
-
-    # Write application at 0x10000
-    dd if="${BUILD_DIR}/esp32-remote-signer.bin" of="$FLASH_IMG" bs=1 seek=$((0x10000)) conv=notrunc 2>/dev/null
+# Wait for user input or timeout
+if [ "$DEBUG_MODE" != "1" ]; then
+    echo "Press Enter to stop QEMU, or Ctrl+C to leave it running..."
+    read -t 30 || true
+    kill $QEMU_PID 2>/dev/null || true
+    echo -e "${GREEN}QEMU stopped${NC}"
 fi
 
-echo ""
-echo -e "${GREEN}Starting QEMU ESP32 Emulator...${NC}"
-echo "================================"
-echo "Device Mode: $([ "$GPIO_PROVISIONING_MODE" = "1" ] && echo "PROVISIONING" || echo "SIGNING")"
-echo "HTTPS Server: https://localhost:8443"
-echo "Serial Console: Active"
-echo ""
-echo "Press Ctrl+A, X to exit QEMU"
-echo "================================"
-echo ""
+exit 0
 
-# Run QEMU
-exec "$QEMU_BIN" "${QEMU_ARGS[@]}"
