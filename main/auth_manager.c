@@ -3,6 +3,7 @@
 #include "esp_random.h"
 #include "mbedtls/sha256.h"
 #include "mbedtls/md.h"
+#include "mbedtls/pkcs5.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include <string.h>
@@ -135,11 +136,11 @@ esp_err_t auth_manager_set_auth_key(const char *password)
 
     // Derive key using HMAC-SHA256 (simplified PBKDF2)
     int iterations = 10000;
-    if (mbedtls_pkcs5_pbkdf2_hmac(&ctx,
-                                   (const unsigned char *)password, strlen(password),
-                                   salt, sizeof(salt),
-                                   iterations,
-                                   AUTH_KEY_SIZE, auth_state.auth_key) != 0) {
+    if (mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
+                                       (const unsigned char *)password, strlen(password),
+                                       salt, sizeof(salt),
+                                       iterations,
+                                       AUTH_KEY_SIZE, auth_state.auth_key) != 0) {
         ESP_LOGE(TAG, "Failed to derive auth key");
         mbedtls_md_free(&ctx);
         return ESP_FAIL;

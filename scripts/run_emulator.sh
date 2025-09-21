@@ -10,8 +10,17 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Configuration
-QEMU_ESP32_PATH="${QEMU_ESP32_PATH:-/usr/local/bin/qemu-system-xtensa}"
+# Configuration - Check ESP-IDF tools first, then fallback to system paths
+if [ -d "$HOME/.espressif/tools/qemu-xtensa" ]; then
+    # Find the latest QEMU version in ESP-IDF tools
+    QEMU_ESP_PATH=$(find "$HOME/.espressif/tools/qemu-xtensa" -name "qemu-system-xtensa" -type f -executable 2>/dev/null | head -1)
+    if [ -n "$QEMU_ESP_PATH" ]; then
+        echo -e "${GREEN}Found QEMU at: $QEMU_ESP_PATH${NC}"
+    fi
+fi
+
+# Set default QEMU path
+QEMU_ESP32_PATH="${QEMU_ESP32_PATH:-${QEMU_ESP_PATH:-/usr/local/bin/qemu-system-xtensa}}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
 FIRMWARE_BIN="${BUILD_DIR}/esp32-remote-signer.bin"
@@ -60,13 +69,15 @@ if ! command -v qemu-system-xtensa &> /dev/null && [ ! -f "$QEMU_ESP32_PATH" ]; 
     echo ""
     echo "Please install QEMU ESP32 first:"
     echo ""
-    echo "macOS (using Homebrew):"
-    echo "  brew tap espressif/tap"
-    echo "  brew install qemu-esp32"
+    echo "Method 1: Install via ESP-IDF tools (recommended):"
+    echo "  brew install libgcrypt glib pixman sdl2 libslirp"
+    echo "  idf_tools.py install qemu-xtensa qemu-riscv32"
+    echo "  . ~/esp/esp-idf/export.sh"
     echo ""
-    echo "Or download from: https://github.com/espressif/qemu/releases"
+    echo "Method 2: Use ESP-IDF's built-in QEMU command:"
+    echo "  idf.py qemu monitor"
     echo ""
-    echo "Set QEMU_ESP32_PATH environment variable if installed in non-standard location:"
+    echo "Or set QEMU_ESP32_PATH environment variable if installed elsewhere:"
     echo "  export QEMU_ESP32_PATH=/path/to/qemu-system-xtensa"
     exit 1
 fi

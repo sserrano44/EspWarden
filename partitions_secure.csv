@@ -1,0 +1,9 @@
+# ESP32 Remote Signer Partition Table - Secure Boot Version
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x11000,  0x4000,   encrypted
+otadata,   data, ota,     0x15000,  0x2000,
+phy_init,  data, phy,     0x17000,  0x1000,
+ota_0,     app,  ota_0,   0x18000,  0x1A0000,
+ota_1,     app,  ota_1,   0x1B8000, 0x1A0000,
+nvs_keys,  data, nvs_keys,0x358000, 0x1000,   encrypted
+storage,   data, nvs,     0x359000, 0x8000,   encrypted

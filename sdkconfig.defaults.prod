@@ -1,31 +1,42 @@
 # ESP32 Remote Signer - Production Configuration
+# Inherits from base configuration with production-specific overrides
+# ENABLES SECURE BOOT FOR PRODUCTION USE
 
-# Include base configuration
-CONFIG_BASE_INCLUDED=y
-
-# Security features - production mode
+# Security features - ENABLED for production (overrides base config)
 CONFIG_SECURE_BOOT=y
 CONFIG_SECURE_BOOT_V2_ENABLED=y
 CONFIG_SECURE_FLASH_ENC_ENABLED=y
 CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
 CONFIG_SECURE_BOOT_ALLOW_ROM_BASIC=n
 CONFIG_SECURE_BOOT_ALLOW_JTAG=n  # Disabled for production
+CONFIG_NVS_ENCRYPTION=y
 
-# Flash encryption - production mode
+# Partition table offset - Extended for secure boot bootloader
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_secure.csv"
+
+# Flash encryption - release mode
 CONFIG_SECURE_FLASH_REQUIRE_ALREADY_ENABLED=y
 CONFIG_SECURE_FLASH_ENCRYPTION_AES256=y
 
-# Production logging
+# Release optimizations
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+
+# Production logging (minimal)
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_LOG_COLORS=n
 
-# Production security
+# Production monitoring
 CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT=y
 CONFIG_ESP_DEBUG_OCDAWARE=n
+CONFIG_ESP32_DEBUG_OCDAWARE=n
 
 # Bootloader
 CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
 CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y
 
-# Disable debugging features
+# Disable debugging features for production
 CONFIG_ESP_ERR_TO_NAME_LOOKUP=n
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=n
+CONFIG_HEAP_POISONING_DISABLED=y

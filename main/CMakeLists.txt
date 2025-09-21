@@ -22,6 +22,9 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "include"
+    EMBED_FILES
+        "certs/server_cert.pem"
+        "certs/server_key.pem"
     REQUIRES
         nvs_flash
         esp_wifi
@@ -33,4 +36,5 @@ idf_component_register(
         spiffs
         esp_timer
         app_update
+        esp_driver_gpio
 )

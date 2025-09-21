@@ -63,46 +63,4 @@ CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 CONFIG_ESP_TASK_WDT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
 CONFIG_ESP_INT_WDT=y
-CONFIG_ESP_INT_WDT_TIMEOUT_MS=300# ESP32 Remote Signer - Emulator Configuration
-# Inherits from base configuration with emulator-specific overrides
-# Optimized for QEMU ESP32 emulation
-
-# Security features - DISABLED for emulation (inherits from base)
-# Base config already has secure boot disabled
-
-# Disable hardware-specific features not supported in QEMU
-CONFIG_MBEDTLS_HARDWARE_AES=n
-CONFIG_MBEDTLS_HARDWARE_SHA=n
-
-# Emulator-specific partition table
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_emulator.csv"
-
-# Enable extensive debugging for emulator
-CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
-CONFIG_BOOTLOADER_LOG_LEVEL_DEBUG=y
-
-# FreeRTOS debugging features
-CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
-CONFIG_FREERTOS_INTERRUPT_BACKTRACE=y
-CONFIG_FREERTOS_TASK_FUNCTION_WRAPPER=y
-CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
-
-# Enable GDB stub for debugging
-CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME=y
-CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
-
-# Disable watchdog timers for stable emulation
-CONFIG_ESP_TASK_WDT=n
-CONFIG_ESP_INT_WDT=n
-
-# Virtual GPIO configuration for QEMU
-CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
-
-# Memory configuration for emulator
-CONFIG_ESP32_SPIRAM_SUPPORT=n
-CONFIG_HEAP_POISONING_LIGHT=y
-
-# Compiler optimizations for debugging
-CONFIG_COMPILER_OPTIMIZATION_DEFAULT=y
-CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
