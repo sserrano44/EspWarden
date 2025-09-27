@@ -1,0 +1,15 @@
+ESP32 Remote Signer - Test Report
+Generated: Mon Sep 22 12:03:32 -03 2025
+
+Test Results:
+-------------
+✓ Unit Tests: PASS
+✗ Emulator Tests: FAIL
+✓ API Tests: PASS
+✓ Integration Tests: PASS
+
+Build Information:
+-----------------
+Commit: d6fdd8c
+Branch: main
+ESP-IDF: unknown

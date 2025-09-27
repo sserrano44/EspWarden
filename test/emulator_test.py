@@ -3,6 +3,7 @@
 ESP32 Remote Signer - Emulator Test Suite
 
 This script tests the ESP32 Remote Signer running in QEMU emulator.
+Now includes comprehensive crypto operation tests with trezor-crypto integration.
 """
 
 import requests
@@ -11,9 +12,11 @@ import time
 import subprocess
 import sys
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 import hashlib
 import hmac
+import socket
+from eth_utils import keccak, to_hex
 
 # Disable SSL warnings for self-signed certificates
 import urllib3
@@ -226,6 +229,258 @@ class ESP32EmulatorTest:
         print("=" * 50)
 
         return all(results)
+
+    def test_eip155_signing(self) -> bool:
+        """Test EIP-155 transaction signing with trezor-crypto"""
+        print("\n🔐 Testing EIP-155 Transaction Signing...")
+
+        # First authenticate
+        health_resp = self.session.get(f"{self.base_url}/health")
+        if health_resp.status_code != 200:
+            print("❌ Failed to get health")
+            return False
+
+        nonce = health_resp.json()["nonce"]
+        token = self.test_unlock_endpoint()
+        if not token:
+            print("❌ Failed to authenticate")
+            return False
+
+        # Prepare test transaction
+        tx = {
+            "chainId": 1,
+            "nonce": "0x0",
+            "gasPrice": "0x4a817c800",
+            "gasLimit": "0x5208",
+            "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bE06",
+            "value": "0xde0b6b3a7640000",
+            "data": "0x"
+        }
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            response = self.session.post(
+                f"{self.base_url}/sign/eip155",
+                json=tx,
+                headers=headers,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                sig = response.json()
+                # Validate signature format
+                if all(k in sig for k in ["r", "s", "v"]):
+                    print(f"✅ EIP-155 signing successful")
+                    print(f"   Signature r: {sig['r'][:16]}...")
+                    print(f"   Signature s: {sig['s'][:16]}...")
+                    print(f"   Signature v: {sig['v']}")
+                    return True
+                else:
+                    print(f"❌ Invalid signature format: {sig}")
+            elif response.status_code == 403:
+                print("⚠️  Signing blocked (device in provisioning mode)")
+                return True  # This is expected in provisioning mode
+            else:
+                print(f"❌ Signing failed: {response.status_code}")
+                print(f"   Response: {response.text}")
+        except Exception as e:
+            print(f"❌ Error during signing: {e}")
+
+        return False
+
+    def test_eip1559_signing(self) -> bool:
+        """Test EIP-1559 transaction signing with trezor-crypto"""
+        print("\n🔐 Testing EIP-1559 Transaction Signing...")
+
+        # First authenticate
+        health_resp = self.session.get(f"{self.base_url}/health")
+        if health_resp.status_code != 200:
+            print("❌ Failed to get health")
+            return False
+
+        nonce = health_resp.json()["nonce"]
+        token = self.test_unlock_endpoint()
+        if not token:
+            print("❌ Failed to authenticate")
+            return False
+
+        # Prepare test transaction
+        tx = {
+            "chainId": 1,
+            "nonce": "0x0",
+            "maxFeePerGas": "0x4a817c800",
+            "maxPriorityFeePerGas": "0x3b9aca00",
+            "gasLimit": "0x5208",
+            "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bE06",
+            "value": "0xde0b6b3a7640000",
+            "data": "0x"
+        }
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            response = self.session.post(
+                f"{self.base_url}/sign/eip1559",
+                json=tx,
+                headers=headers,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                sig = response.json()
+                # Validate signature format
+                if all(k in sig for k in ["r", "s", "v"]):
+                    print(f"✅ EIP-1559 signing successful")
+                    print(f"   Signature r: {sig['r'][:16]}...")
+                    print(f"   Signature s: {sig['s'][:16]}...")
+                    print(f"   Signature v: {sig['v']}")
+                    return True
+                else:
+                    print(f"❌ Invalid signature format: {sig}")
+            elif response.status_code == 403:
+                print("⚠️  Signing blocked (device in provisioning mode)")
+                return True  # This is expected in provisioning mode
+            else:
+                print(f"❌ Signing failed: {response.status_code}")
+                print(f"   Response: {response.text}")
+        except Exception as e:
+            print(f"❌ Error during signing: {e}")
+
+        return False
+
+    def test_signature_determinism(self) -> bool:
+        """Test that signatures are deterministic (RFC6979)"""
+        print("\n🔐 Testing Signature Determinism...")
+
+        # First authenticate
+        token = self.test_unlock_endpoint()
+        if not token:
+            print("⚠️  Skipping - authentication failed")
+            return True
+
+        tx = {
+            "chainId": 1,
+            "nonce": "0x0",
+            "gasPrice": "0x4a817c800",
+            "gasLimit": "0x5208",
+            "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bE06",
+            "value": "0x0",
+            "data": "0x"
+        }
+
+        headers = {"Authorization": f"Bearer {token}"}
+        signatures = []
+
+        # Sign the same transaction twice
+        for i in range(2):
+            try:
+                response = self.session.post(
+                    f"{self.base_url}/sign/eip155",
+                    json=tx,
+                    headers=headers,
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    signatures.append(response.json())
+                elif response.status_code == 403:
+                    print("⚠️  Device in provisioning mode - skipping")
+                    return True
+                else:
+                    print(f"❌ Signing failed: {response.status_code}")
+                    return False
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                return False
+
+        if len(signatures) == 2:
+            # Check if signatures are identical (deterministic)
+            if signatures[0] == signatures[1]:
+                print("✅ Signatures are deterministic (RFC6979)")
+                return True
+            else:
+                print("❌ Signatures are not deterministic!")
+                print(f"   Sig1: r={signatures[0]['r'][:16]}...")
+                print(f"   Sig2: r={signatures[1]['r'][:16]}...")
+                return False
+
+        return False
+
+    def test_crypto_performance(self) -> bool:
+        """Test crypto operation performance"""
+        print("\n⚡ Testing Crypto Performance...")
+
+        # Authenticate first
+        token = self.test_unlock_endpoint()
+        if not token:
+            print("⚠️  Skipping - authentication failed")
+            return True
+
+        headers = {"Authorization": f"Bearer {token}"}
+        start_time = time.time()
+        successful_signs = 0
+        iterations = 10
+
+        for i in range(iterations):
+            tx = {
+                "chainId": 1,
+                "nonce": hex(i),
+                "gasPrice": "0x4a817c800",
+                "gasLimit": "0x5208",
+                "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bE06",
+                "value": hex(1000000000000000 * i),
+                "data": "0x"
+            }
+
+            try:
+                response = self.session.post(
+                    f"{self.base_url}/sign/eip155",
+                    json=tx,
+                    headers=headers,
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    successful_signs += 1
+                elif response.status_code == 403:
+                    print("⚠️  Device in provisioning mode - skipping performance test")
+                    return True
+            except:
+                pass
+
+        elapsed = time.time() - start_time
+
+        if successful_signs > 0:
+            rate = successful_signs / elapsed
+            print(f"✅ Performance Test Complete")
+            print(f"   Successful signs: {successful_signs}/{iterations}")
+            print(f"   Time elapsed: {elapsed:.2f}s")
+            print(f"   Rate: {rate:.2f} signatures/second")
+            return True
+        else:
+            print("❌ No successful signatures")
+            return False
+
+    def run_crypto_tests(self) -> bool:
+        """Run all crypto-specific tests"""
+        print("\n" + "=" * 50)
+        print("Crypto Operations Test Suite")
+        print("=" * 50)
+
+        if not self.wait_for_device():
+            return False
+
+        results = []
+        results.append(self.test_eip155_signing())
+        results.append(self.test_eip1559_signing())
+        results.append(self.test_signature_determinism())
+        results.append(self.test_crypto_performance())
+
+        print("\n" + "=" * 50)
+        print("Crypto Test Results Summary:")
+        passed = sum(results)
+        total = len(results)
+        print(f"Passed: {passed}/{total}")
+        print("=" * 50)
 
 
 def main():

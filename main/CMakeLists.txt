@@ -37,4 +37,5 @@ idf_component_register(
         esp_timer
         app_update
         esp_driver_gpio
+        trezor-crypto
 )

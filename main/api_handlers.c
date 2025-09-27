@@ -4,9 +4,16 @@
 #include "device_mode.h"
 #include "wifi_manager.h"
 #include "auth_manager.h"
+#include "crypto_manager.h"
+#include "storage_manager.h"
+#include "policy_engine.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include <string.h>
+#include <stdlib.h>
+
+// Trezor-crypto includes for transaction hashing
+#include "sha3.h"
 
 static const char *TAG = "API_HANDLERS";
 
@@ -318,20 +325,285 @@ esp_err_t api_handle_wipe(httpd_req_t *req)
                              "Wipe functionality not yet implemented", NULL);
 }
 
+// Helper function to convert hex string to bytes
+__attribute__((unused)) static esp_err_t hex_to_bytes(const char *hex_str, uint8_t *bytes, size_t bytes_len)
+{
+    if (!hex_str || !bytes) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Remove 0x prefix if present
+    if (strncmp(hex_str, "0x", 2) == 0) {
+        hex_str += 2;
+    }
+
+    size_t hex_len = strlen(hex_str);
+    if (hex_len != bytes_len * 2) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (size_t i = 0; i < bytes_len; i++) {
+        char byte_str[3] = {hex_str[i*2], hex_str[i*2+1], 0};
+        bytes[i] = (uint8_t)strtol(byte_str, NULL, 16);
+    }
+
+    return ESP_OK;
+}
+
+// Helper function to convert bytes to hex string
+static void bytes_to_hex(const uint8_t *bytes, size_t bytes_len, char *hex_str)
+{
+    for (size_t i = 0; i < bytes_len; i++) {
+        sprintf(&hex_str[i*2], "%02x", bytes[i]);
+    }
+    hex_str[bytes_len * 2] = 0;
+}
+
+// Helper function to get private key from storage (placeholder)
+static esp_err_t get_signing_key(uint8_t private_key[32])
+{
+    // TODO: Implement secure key retrieval from NVS
+    // For now, generate a deterministic test key
+    ESP_LOGW(TAG, "Using deterministic test key - DO NOT USE IN PRODUCTION");
+
+    // Generate a simple test key (in production this would come from secure storage)
+    for (int i = 0; i < 32; i++) {
+        private_key[i] = i + 1;  // Simple pattern for testing
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /sign/eip1559 request");
 
-    // TODO: Implement EIP-1559 transaction signing
-    return send_error_response(req, 501, "NOT_IMPLEMENTED",
-                             "EIP-1559 signing not yet implemented", NULL);
+    // Check if device is in signing mode
+    if (is_provisioning_mode()) {
+        return send_error_response(req, 403, "PROVISIONING_MODE",
+                                 "Cannot sign transactions in provisioning mode", NULL);
+    }
+
+    // Parse JSON request body
+    size_t content_len = req->content_len;
+    if (content_len == 0 || content_len > 2048) {
+        return send_error_response(req, 400, "INVALID_REQUEST",
+                                 "Invalid content length", NULL);
+    }
+
+    char *buffer = malloc(content_len + 1);
+    if (!buffer) {
+        return send_error_response(req, 500, "INTERNAL_ERROR",
+                                 "Memory allocation failed", NULL);
+    }
+
+    int ret = httpd_req_recv(req, buffer, content_len);
+    if (ret <= 0) {
+        free(buffer);
+        return send_error_response(req, 400, "INVALID_REQUEST",
+                                 "Failed to receive request body", NULL);
+    }
+    buffer[content_len] = 0;
+
+    cJSON *json = cJSON_Parse(buffer);
+    free(buffer);
+
+    if (!json) {
+        return send_error_response(req, 400, "INVALID_JSON",
+                                 "Invalid JSON format", NULL);
+    }
+
+    // Extract transaction fields
+    cJSON *chain_id_json = cJSON_GetObjectItem(json, "chainId");
+    cJSON *nonce_json = cJSON_GetObjectItem(json, "nonce");
+    cJSON *max_fee_json = cJSON_GetObjectItem(json, "maxFeePerGas");
+    cJSON *max_priority_json = cJSON_GetObjectItem(json, "maxPriorityFeePerGas");
+    cJSON *gas_limit_json = cJSON_GetObjectItem(json, "gasLimit");
+    cJSON *to_json = cJSON_GetObjectItem(json, "to");
+    cJSON *value_json = cJSON_GetObjectItem(json, "value");
+    cJSON *data_json = cJSON_GetObjectItem(json, "data");
+
+    if (!chain_id_json || !nonce_json || !max_fee_json || !max_priority_json ||
+        !gas_limit_json || !to_json || !value_json || !data_json) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "MISSING_FIELDS",
+                                 "Missing required transaction fields", NULL);
+    }
+
+    uint32_t chain_id = (uint32_t)cJSON_GetNumberValue(chain_id_json);
+
+    // TODO: Create transaction hash for EIP-1559
+    // This is a simplified implementation - in production you would need proper RLP encoding
+    transaction_hash_t tx_hash;
+    tx_hash.chain_id = chain_id;
+
+    // Create a simple hash from the transaction data (this is not correct EIP-1559 encoding)
+    char tx_string[1024];
+    snprintf(tx_string, sizeof(tx_string),
+             "%lu:%s:%s:%s:%s:%s:%s:%s",
+             (unsigned long)chain_id,
+             cJSON_GetStringValue(nonce_json),
+             cJSON_GetStringValue(max_fee_json),
+             cJSON_GetStringValue(max_priority_json),
+             cJSON_GetStringValue(gas_limit_json),
+             cJSON_GetStringValue(to_json),
+             cJSON_GetStringValue(value_json),
+             cJSON_GetStringValue(data_json));
+
+    keccak_256((uint8_t*)tx_string, strlen(tx_string), tx_hash.hash);
+
+    // Get private key
+    uint8_t private_key[32];
+    esp_err_t key_ret = get_signing_key(private_key);
+    if (key_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "KEY_ERROR",
+                                 "Failed to retrieve signing key", NULL);
+    }
+
+    // Sign the transaction
+    ecdsa_signature_t signature;
+    esp_err_t sign_ret = crypto_sign_transaction(private_key, &tx_hash, &signature);
+    if (sign_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "SIGNING_ERROR",
+                                 "Failed to sign transaction", NULL);
+    }
+
+    // Convert signature to hex strings
+    char r_hex[65], s_hex[65];
+    bytes_to_hex(signature.r, 32, r_hex);
+    bytes_to_hex(signature.s, 32, s_hex);
+
+    // Create response JSON
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "r", r_hex);
+    cJSON_AddStringToObject(response, "s", s_hex);
+    cJSON_AddNumberToObject(response, "v", signature.v);
+
+    char *response_str = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_str);
+
+    free(response_str);
+    cJSON_Delete(response);
+    cJSON_Delete(json);
+
+    ESP_LOGI(TAG, "EIP-1559 transaction signed successfully");
+    return send_ret;
 }
 
 esp_err_t api_handle_sign_eip155(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /sign/eip155 request");
 
-    // TODO: Implement EIP-155 transaction signing
-    return send_error_response(req, 501, "NOT_IMPLEMENTED",
-                             "EIP-155 signing not yet implemented", NULL);
+    // Check if device is in signing mode
+    if (is_provisioning_mode()) {
+        return send_error_response(req, 403, "PROVISIONING_MODE",
+                                 "Cannot sign transactions in provisioning mode", NULL);
+    }
+
+    // Parse JSON request body
+    size_t content_len = req->content_len;
+    if (content_len == 0 || content_len > 2048) {
+        return send_error_response(req, 400, "INVALID_REQUEST",
+                                 "Invalid content length", NULL);
+    }
+
+    char *buffer = malloc(content_len + 1);
+    if (!buffer) {
+        return send_error_response(req, 500, "INTERNAL_ERROR",
+                                 "Memory allocation failed", NULL);
+    }
+
+    int ret = httpd_req_recv(req, buffer, content_len);
+    if (ret <= 0) {
+        free(buffer);
+        return send_error_response(req, 400, "INVALID_REQUEST",
+                                 "Failed to receive request body", NULL);
+    }
+    buffer[content_len] = 0;
+
+    cJSON *json = cJSON_Parse(buffer);
+    free(buffer);
+
+    if (!json) {
+        return send_error_response(req, 400, "INVALID_JSON",
+                                 "Invalid JSON format", NULL);
+    }
+
+    // Extract transaction fields
+    cJSON *chain_id_json = cJSON_GetObjectItem(json, "chainId");
+    cJSON *nonce_json = cJSON_GetObjectItem(json, "nonce");
+    cJSON *gas_price_json = cJSON_GetObjectItem(json, "gasPrice");
+    cJSON *gas_limit_json = cJSON_GetObjectItem(json, "gasLimit");
+    cJSON *to_json = cJSON_GetObjectItem(json, "to");
+    cJSON *value_json = cJSON_GetObjectItem(json, "value");
+    cJSON *data_json = cJSON_GetObjectItem(json, "data");
+
+    if (!chain_id_json || !nonce_json || !gas_price_json ||
+        !gas_limit_json || !to_json || !value_json || !data_json) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "MISSING_FIELDS",
+                                 "Missing required transaction fields", NULL);
+    }
+
+    uint32_t chain_id = (uint32_t)cJSON_GetNumberValue(chain_id_json);
+
+    // TODO: Create transaction hash for EIP-155
+    // This is a simplified implementation - in production you would need proper RLP encoding
+    transaction_hash_t tx_hash;
+    tx_hash.chain_id = chain_id;
+
+    // Create a simple hash from the transaction data (this is not correct EIP-155 encoding)
+    char tx_string[1024];
+    snprintf(tx_string, sizeof(tx_string),
+             "%lu:%s:%s:%s:%s:%s:%s",
+             (unsigned long)chain_id,
+             cJSON_GetStringValue(nonce_json),
+             cJSON_GetStringValue(gas_price_json),
+             cJSON_GetStringValue(gas_limit_json),
+             cJSON_GetStringValue(to_json),
+             cJSON_GetStringValue(value_json),
+             cJSON_GetStringValue(data_json));
+
+    keccak_256((uint8_t*)tx_string, strlen(tx_string), tx_hash.hash);
+
+    // Get private key
+    uint8_t private_key[32];
+    esp_err_t key_ret = get_signing_key(private_key);
+    if (key_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "KEY_ERROR",
+                                 "Failed to retrieve signing key", NULL);
+    }
+
+    // Sign the transaction
+    ecdsa_signature_t signature;
+    esp_err_t sign_ret = crypto_sign_transaction(private_key, &tx_hash, &signature);
+    if (sign_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "SIGNING_ERROR",
+                                 "Failed to sign transaction", NULL);
+    }
+
+    // Convert signature to hex strings
+    char r_hex[65], s_hex[65];
+    bytes_to_hex(signature.r, 32, r_hex);
+    bytes_to_hex(signature.s, 32, s_hex);
+
+    // Create response JSON
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "r", r_hex);
+    cJSON_AddStringToObject(response, "s", s_hex);
+    cJSON_AddNumberToObject(response, "v", signature.v);
+
+    char *response_str = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_str);
+
+    free(response_str);
+    cJSON_Delete(response);
+    cJSON_Delete(json);
+
+    ESP_LOGI(TAG, "EIP-155 transaction signed successfully");
+    return send_ret;
 }

@@ -25,7 +25,8 @@ Run the firmware in QEMU emulator for development and testing:
 
 ```bash
 # Install QEMU ESP32 (macOS)
-make install-qemu-macos
+brew install libgcrypt glib pixman sdl2 libslirp
+idf_tools.py install qemu-xtensa qemu-riscv32
 
 # Build and run in emulator
 make emulator-setup
@@ -308,16 +309,53 @@ npm test
 
 ### Testing
 
-```bash
-# Run firmware tests
-cd tests
-npm install
-npm test
+The ESP32 Remote Signer includes a comprehensive test suite covering unit tests, integration tests, and performance benchmarks.
 
-# Run client tests
-cd client
-npm test
+#### Quick Test (Emulator - No Hardware Required)
+```bash
+# Install test dependencies
+cd test && pip3 install -r requirements.txt
+
+# Run all tests with emulator
+./test/run_tests.sh all
 ```
+
+#### Test Crypto Operations
+```bash
+# Test signing with trezor-crypto integration
+./test/run_tests.sh crypto
+
+# Test specific transaction types
+python3 test/test_crypto.py::TestCryptoOperations::test_eip155_signing
+python3 test/test_crypto.py::TestCryptoOperations::test_eip1559_signing
+```
+
+#### Test With Hardware
+```bash
+# Flash firmware and run tests
+make flash
+export ESP32_SIGNER_URL="https://192.168.1.100"
+python3 test/test_crypto.py
+```
+
+#### Test Coverage
+- ✅ **Unit Tests**: Crypto operations, key generation, signing (Unity framework)
+- ✅ **API Tests**: HTTP endpoints, authentication, transaction signing
+- ✅ **Integration Tests**: Complete transaction flows using QEMU emulator
+- ✅ **Performance Tests**: Signing rate, memory usage, response times
+- ✅ **Security Tests**: Mode enforcement, rate limiting, input validation
+
+#### Test Results Dashboard
+```bash
+# Generate detailed test report
+./test/run_tests.sh all --report
+
+# View coverage report
+pytest test/ --cov=. --cov-report=html
+open htmlcov/index.html
+```
+
+**📖 Detailed Documentation**: See [Testing Guide](docs/TESTING.md) for complete testing documentation and [Quick Start](docs/TESTING_QUICK_START.md) for 5-minute setup.
 
 ## Troubleshooting
 

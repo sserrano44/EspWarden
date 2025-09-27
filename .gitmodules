@@ -1,0 +1,3 @@
+[submodule "components/trezor-crypto"]
+	path = components/trezor-crypto
+	url = https://github.com/dexon-foundation/esp-trezor-crypto.git
