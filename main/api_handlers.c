@@ -207,15 +207,15 @@ esp_err_t api_handle_wifi_config(httpd_req_t *req)
     }
 
     cJSON *ssid = cJSON_GetObjectItem(json, "ssid");
-    cJSON *psk = cJSON_GetObjectItem(json, "psk");
+    cJSON *password = cJSON_GetObjectItem(json, "password");
 
-    if (!cJSON_IsString(ssid) || !cJSON_IsString(psk)) {
+    if (!cJSON_IsString(ssid) || !cJSON_IsString(password)) {
         cJSON_Delete(json);
         return send_error_response(req, 400, "MISSING_FIELDS",
-                                 "Missing ssid or psk fields", NULL);
+                                 "Missing ssid or password fields", NULL);
     }
 
-    esp_err_t ret = wifi_save_credentials(ssid->valuestring, psk->valuestring);
+    esp_err_t ret = wifi_save_credentials(ssid->valuestring, password->valuestring);
     cJSON_Delete(json);
 
     if (ret != ESP_OK) {

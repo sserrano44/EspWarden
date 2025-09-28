@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 esp_err_t wifi_manager_init(void);
+esp_err_t wifi_start_ap(void);
 esp_err_t wifi_save_credentials(const char* ssid, const char* password);
 esp_err_t wifi_connect_saved(void);
 esp_err_t wifi_connect(const char* ssid, const char* password);

@@ -1,4 +1,5 @@
 #include "https_server.h"
+#include "provisioning_page.h"
 #include "esp_https_server.h"
 #include "esp_log.h"
 #include "cJSON.h"
@@ -160,6 +161,49 @@ static esp_err_t sign_eip155_post_handler(httpd_req_t *req)
     return api_handle_sign_eip155(req);
 }
 
+// Root page handler - GET /
+static esp_err_t root_get_handler(httpd_req_t *req)
+{
+    if (is_provisioning_mode()) {
+        // Serve provisioning page
+        httpd_resp_set_type(req, "text/html");
+        return httpd_resp_send(req, provisioning_html, strlen(provisioning_html));
+    } else {
+        // Serve device status page
+        cJSON *json = cJSON_CreateObject();
+        cJSON *status = cJSON_CreateString("operational");
+        cJSON *mode = cJSON_CreateString("signing");
+
+        cJSON_AddItemToObject(json, "status", status);
+        cJSON_AddItemToObject(json, "mode", mode);
+
+        char *json_string = cJSON_Print(json);
+        esp_err_t ret = send_json_response(req, 200, json_string);
+
+        free(json_string);
+        cJSON_Delete(json);
+        return ret;
+    }
+}
+
+// Reboot handler - POST /reboot (provisioning mode only)
+static esp_err_t reboot_post_handler(httpd_req_t *req)
+{
+    if (!is_provisioning_mode()) {
+        return send_error_response(req, 403, "MODE_READ_ONLY",
+                                 "Reboot not allowed in signing mode",
+                                 "DEVICE_IN_SIGNING_MODE");
+    }
+
+    httpd_resp_set_status(req, HTTPD_200);
+    httpd_resp_send(req, "Rebooting...", strlen("Rebooting..."));
+
+    // Schedule reboot after response is sent
+    esp_restart();
+
+    return ESP_OK;
+}
+
 // OPTIONS handler for CORS
 static esp_err_t options_handler(httpd_req_t *req)
 {
@@ -173,7 +217,7 @@ static esp_err_t options_handler(httpd_req_t *req)
 
 esp_err_t https_server_start(void)
 {
-    if (!wifi_is_connected()) {
+    if (!is_provisioning_mode() && !wifi_is_connected()) {
         ESP_LOGE(TAG, "Cannot start HTTPS server - WiFi not connected");
         return ESP_FAIL;
     }
@@ -199,6 +243,15 @@ esp_err_t https_server_start(void)
     }
 
     // Register URI handlers
+
+    // Root page (both modes)
+    httpd_uri_t root_uri = {
+        .uri       = "/",
+        .method    = HTTP_GET,
+        .handler   = root_get_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &root_uri);
 
     // Public endpoints (both modes)
     httpd_uri_t health_uri = {
@@ -265,6 +318,14 @@ esp_err_t https_server_start(void)
         .user_ctx  = NULL
     };
     httpd_register_uri_handler(server, &wipe_uri);
+
+    httpd_uri_t reboot_uri = {
+        .uri       = "/reboot",
+        .method    = HTTP_POST,
+        .handler   = reboot_post_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &reboot_uri);
 
     // Signing mode endpoints
     httpd_uri_t sign_eip1559_uri = {

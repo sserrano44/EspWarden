@@ -61,11 +61,20 @@ See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
    . ./export.sh
    ```
 
-2. **Build and Flash:**
+2. **Generate SSL Certificates:**
    ```bash
    git clone https://github.com/your-org/esp32-remote-signer.git
    cd esp32-remote-signer
 
+   # Generate self-signed certificates for HTTPS server
+   cd main/certs
+   openssl req -newkey rsa:2048 -nodes -keyout server_key.pem -x509 -days 3650 \
+     -out server_cert.pem -subj "/CN=ESP32RemoteSigner"
+   cd ../..
+   ```
+
+3. **Build and Flash:**
+   ```bash
    # Development build
    make dev-build
    make flash
@@ -81,55 +90,42 @@ See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
 1. **Enter Provisioning Mode:**
    - Connect GPIO 2 to GND
    - Power on the device
-   - Device will create a WiFi access point
+   - Device creates WiFi access point: `ESP32-Signer-XXXX`
 
-2. **Configure the Device:**
-   ```javascript
-   const { ESP32Client } = require('@esp32/remote-signer-client');
+2. **Configure via Web Interface:**
+   - Connect your phone/laptop to the `ESP32-Signer-XXXX` network
+   - Open any website in your browser (captive portal will redirect)
+   - Or directly visit: `https://192.168.4.1`
+   - Complete setup form:
+     - WiFi credentials for your network
+     - 256-bit authentication key (64 hex characters)
+     - Generate signing key
+     - Set transaction policy (chains, addresses, limits)
 
-   const client = new ESP32Client({
-     deviceUrl: 'https://192.168.1.100', // Device IP
-     authKey: 'your-256-bit-hex-auth-key',
-     clientId: 'provisioning-client'
-   });
+3. **Complete Setup:**
+   - Click "Restart Device" or remove GPIO 2 jumper and power cycle
+   - Device will connect to your WiFi network
+   - Use device IP for signing operations
 
-   // Configure WiFi
-   await client.configureWiFi({
-     ssid: 'YourWiFiNetwork',
-     psk: 'your-wifi-password'
-   });
+#### Alternative: API Configuration
 
-   // Set authentication key
-   await client.configureAuth({
-     password: 'your-strong-provisioning-password'
-   });
+For programmatic setup, use the Node.js client:
 
-   // Generate or import private key
-   await client.configureKey({
-     mode: 'generate' // or 'import' with seed/privkey
-   });
+```javascript
+const { ESP32Client } = require('@esp32/remote-signer-client');
 
-   // Set transaction policy
-   await client.configurePolicy({
-     allowedChains: [1, 10, 8453], // Ethereum, Optimism, Base
-     toWhitelist: [
-       '0x742d35Cc3672C1BfeE3d4D5a0e6E9C4FfBe7E8A8',
-       '0xA0b86a33E6417C7Ef6D7680B2d5df2aC4d5a6E1B'
-     ],
-     functionWhitelist: [
-       '0xa9059cbb', // transfer(address,uint256)
-       '0x095ea7b3'  // approve(address,uint256)
-     ],
-     maxValueWei: '0x16345785d8a0000', // 0.1 ETH
-     maxGasLimit: 200000,
-     maxFeePerGasWei: '0x2540be400', // 10 gwei
-     allowEmptyDataToWhitelist: true
-   });
-   ```
+const client = new ESP32Client({
+  deviceUrl: 'https://192.168.4.1', // AP mode IP
+  authKey: 'your-256-bit-hex-auth-key',
+  clientId: 'provisioning-client'
+});
 
-3. **Switch to Signing Mode:**
-   - Remove the provisioning jumper
-   - Restart the device
+// Configure via API endpoints
+await client.configureWiFi({ ssid: 'YourNetwork', password: 'pass' });
+await client.configureAuth({ key: 'your-auth-key' });
+await client.configureKey({ mode: 'generate' });
+await client.configurePolicy({ /* policy config */ });
+```
 
 ### Using with ethers.js
 
@@ -379,6 +375,11 @@ open htmlcov/index.html
    - Implement exponential backoff in client
    - Reduce request frequency
    - Use circuit breaker pattern
+
+5. **HTTPS certificate errors:**
+   - Regenerate certificates: `cd main/certs && openssl req -newkey rsa:2048 -nodes -keyout server_key.pem -x509 -days 3650 -out server_cert.pem -subj "/CN=ESP32RemoteSigner"`
+   - Rebuild firmware: `make clean && make dev-build && make flash`
+   - For development, set `NODE_TLS_REJECT_UNAUTHORIZED=0` to accept self-signed certs
 
 ### Debug Mode
 

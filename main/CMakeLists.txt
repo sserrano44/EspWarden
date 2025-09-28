@@ -4,6 +4,7 @@ set(COMPONENT_SRCS
     "device_mode.c"
     "wifi_manager.c"
     "https_server.c"
+    "captive_dns.c"
     "auth_manager.c"
     "crypto_manager.c"
     "storage_manager.c"

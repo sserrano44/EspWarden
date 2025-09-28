@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "captive_dns.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -52,31 +53,50 @@ esp_err_t wifi_manager_init(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    if (is_provisioning_mode()) {
+        ESP_LOGI(TAG, "Starting in Access Point mode for provisioning");
+        esp_netif_create_default_wifi_ap();
 
-    esp_event_handler_instance_t instance_any_id;
-    esp_event_handler_instance_t instance_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        &instance_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        &instance_got_ip));
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        esp_event_handler_instance_t instance_any_id;
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                            ESP_EVENT_ANY_ID,
+                                                            &wifi_event_handler,
+                                                            NULL,
+                                                            &instance_any_id));
 
-    // Try to load and connect to saved WiFi credentials
-    esp_err_t ret = wifi_connect_saved();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "No saved WiFi credentials or connection failed");
-        if (!is_provisioning_mode()) {
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+
+        // Start Access Point for provisioning
+        return wifi_start_ap();
+    } else {
+        ESP_LOGI(TAG, "Starting in Station mode for operation");
+        esp_netif_create_default_wifi_sta();
+
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+        esp_event_handler_instance_t instance_any_id;
+        esp_event_handler_instance_t instance_got_ip;
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                            ESP_EVENT_ANY_ID,
+                                                            &wifi_event_handler,
+                                                            NULL,
+                                                            &instance_any_id));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                            IP_EVENT_STA_GOT_IP,
+                                                            &wifi_event_handler,
+                                                            NULL,
+                                                            &instance_got_ip));
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+        // Try to load and connect to saved WiFi credentials
+        esp_err_t ret = wifi_connect_saved();
+        if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Device in signing mode but no WiFi configured!");
             return ESP_FAIL;
         }
@@ -211,6 +231,42 @@ esp_err_t wifi_connect(const char* ssid, const char* password)
         ESP_LOGE(TAG, "Unexpected WiFi connection event");
         return ESP_FAIL;
     }
+}
+
+esp_err_t wifi_start_ap(void)
+{
+    // Generate AP SSID with device MAC
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_AP, mac);
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid_len = 0,
+            .channel = 1,
+            .password = "",
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_OPEN,
+            .ssid_hidden = 0,
+            .beacon_interval = 100
+        },
+    };
+
+    snprintf((char*)wifi_config.ap.ssid, sizeof(wifi_config.ap.ssid),
+             "ESP32-Signer-%02X%02X", mac[4], mac[5]);
+
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "Access Point started: %s", wifi_config.ap.ssid);
+    ESP_LOGI(TAG, "Connect to this network and visit https://192.168.4.1");
+
+    // Start captive DNS server
+    esp_err_t dns_ret = captive_dns_start();
+    if (dns_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start captive DNS server: %s", esp_err_to_name(dns_ret));
+    }
+
+    return ESP_OK;
 }
 
 bool wifi_is_connected(void)
