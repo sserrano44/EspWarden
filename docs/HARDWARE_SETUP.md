@@ -13,7 +13,7 @@ This guide covers the physical setup and wiring of the ESP32 Remote Signer devic
   - USB programming interface
 
 ### Additional Components
-- 2x Jumper wires (male-to-male)
+- 1x Jumper wire (male-to-male)
 - USB cable (USB-A to Micro-USB or USB-C depending on board)
 - Optional: LED for status indication
 - Optional: External antenna for better WiFi range
@@ -22,12 +22,11 @@ This guide covers the physical setup and wiring of the ESP32 Remote Signer devic
 
 ### Provisioning Jumper Detection
 ```
-GPIO 2 ────┬──── GND (connect for provisioning mode)
-GPIO 4 ────┘
+GPIO 2 ──── GND (connect for provisioning mode)
 ```
 
 **Important Notes:**
-- Both pins must be connected to GND simultaneously for provisioning mode
+- GPIO 2 must be connected to GND for provisioning mode
 - Pins have internal pull-up resistors enabled
 - Remove connections for normal signing mode operation
 
@@ -82,11 +81,7 @@ ESP32 NodeMCU-32S Board Layout:
 
 1. **Create provisioning jumper:**
    ```
-   Step 1: Connect one jumper wire from GPIO 2 to GND
-   Step 2: Connect another jumper wire from GPIO 4 to GND
-
-   Alternative: Use a single jumper to bridge GPIO 2 and GPIO 4,
-   then connect to GND with another jumper
+   Connect jumper wire from GPIO 2 to GND
    ```
 
 2. **Power on the device:**
@@ -96,10 +91,9 @@ ESP32 NodeMCU-32S Board Layout:
 
 ### 3. Signing Mode Setup
 
-1. **Remove provisioning jumpers:**
+1. **Remove provisioning jumper:**
    - Disconnect GPIO 2 from GND
-   - Disconnect GPIO 4 from GND
-   - Store jumpers safely for future use
+   - Store jumper safely for future use
 
 2. **Power cycle the device:**
    - Disconnect and reconnect USB
@@ -155,10 +149,10 @@ If you install a status LED on GPIO 5:
 4. Check board power LED
 
 ### Cannot Enter Provisioning Mode
-1. Verify jumper connections to GND
-2. Check GPIO pin numbers (2 and 4)
-3. Ensure solid connections
-4. Power cycle after connecting jumpers
+1. Verify jumper connection to GND
+2. Check GPIO pin number (2)
+3. Ensure solid connection
+4. Power cycle after connecting jumper
 
 ### WiFi Connection Issues
 1. Check antenna connection (if external)

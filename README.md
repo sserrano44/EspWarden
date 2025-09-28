@@ -41,14 +41,13 @@ See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
 
 1. **Required Hardware:**
    - ESP32 NodeMCU-32S (or compatible with Secure Boot support)
-   - 2 jumper wires for provisioning mode
+   - 1 jumper wire for provisioning mode
    - USB cable for programming
 
 2. **GPIO Connections:**
    ```
    Provisioning Jumper:
-   GPIO 2 ──┬── GND (for provisioning mode)
-   GPIO 4 ──┘
+   GPIO 2 ──── GND (for provisioning mode)
    ```
 
 ### Firmware Installation
@@ -80,7 +79,7 @@ See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
 ### Device Provisioning
 
 1. **Enter Provisioning Mode:**
-   - Connect GPIO 2 and GPIO 4 to GND
+   - Connect GPIO 2 to GND
    - Power on the device
    - Device will create a WiFi access point
 

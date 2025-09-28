@@ -10,22 +10,21 @@ esp_err_t device_mode_init(void)
 {
     ESP_LOGI(TAG, "Initializing device mode detection...");
 
-    // Configure GPIO pins for provisioning jumper detection
+    // Configure GPIO pin for provisioning jumper detection
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = (1ULL << PROVISIONING_PIN_A) | (1ULL << PROVISIONING_PIN_B),
+        .pin_bit_mask = (1ULL << PROVISIONING_PIN_A),
         .pull_down_en = 0,
-        .pull_up_en = 1,  // Enable pull-up resistors
+        .pull_up_en = 1,  // Enable pull-up resistor
     };
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
-    // Read GPIO pins to determine mode
+    // Read GPIO pin to determine mode
     int pin_a_level = gpio_get_level(PROVISIONING_PIN_A);
-    int pin_b_level = gpio_get_level(PROVISIONING_PIN_B);
 
-    // If both pins are shorted to ground (low), enter provisioning mode
-    if (pin_a_level == 0 && pin_b_level == 0) {
+    // If GPIO 2 is shorted to ground (low), enter provisioning mode
+    if (pin_a_level == 0) {
         current_mode = DEVICE_MODE_PROVISIONING;
         ESP_LOGW(TAG, "Provisioning jumper detected - entering PROVISIONING MODE");
     } else {

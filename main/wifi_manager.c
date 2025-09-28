@@ -134,35 +134,39 @@ esp_err_t wifi_save_credentials(const char* ssid, const char* password)
 
 esp_err_t wifi_connect_saved(void)
 {
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Cannot open NVS handle for reading WiFi credentials");
-        return err;
-    }
-
     char ssid[32] = {0};
     char password[64] = {0};
-    size_t ssid_len = sizeof(ssid);
-    size_t password_len = sizeof(password);
 
-    err = nvs_get_str(nvs_handle, WIFI_SSID_KEY, ssid, &ssid_len);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No saved SSID found");
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+
+    if (err == ESP_OK) {
+        size_t ssid_len = sizeof(ssid);
+        size_t password_len = sizeof(password);
+
+        err = nvs_get_str(nvs_handle, WIFI_SSID_KEY, ssid, &ssid_len);
+        if (err == ESP_OK) {
+            err = nvs_get_str(nvs_handle, WIFI_PASSWORD_KEY, password, &password_len);
+        }
         nvs_close(nvs_handle);
-        return err;
+
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Using WiFi credentials from NVS");
+            return wifi_connect(ssid, password);
+        }
     }
 
-    err = nvs_get_str(nvs_handle, WIFI_PASSWORD_KEY, password, &password_len);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "No saved password found");
-        nvs_close(nvs_handle);
-        return err;
+    ESP_LOGW(TAG, "No saved WiFi credentials in NVS, trying Kconfig defaults");
+
+#ifdef CONFIG_WIFI_SSID
+    if (strlen(CONFIG_WIFI_SSID) > 0 && strlen(CONFIG_WIFI_PASSWORD) > 0) {
+        ESP_LOGI(TAG, "Using WiFi credentials from Kconfig");
+        return wifi_connect(CONFIG_WIFI_SSID, CONFIG_WIFI_PASSWORD);
     }
+#endif
 
-    nvs_close(nvs_handle);
-
-    return wifi_connect(ssid, password);
+    ESP_LOGE(TAG, "No WiFi credentials available");
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t wifi_connect(const char* ssid, const char* password)

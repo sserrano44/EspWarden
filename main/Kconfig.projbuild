@@ -1,0 +1,22 @@
+menu "ESP32 Remote Signer Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "network"
+        help
+            SSID (network name) for the device to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "password"
+        help
+            WiFi password (WPA or WPA2) for the network.
+
+    config AUTH_KEY
+        string "Authentication Key (hex)"
+        default ""
+        help
+            256-bit authentication key in hexadecimal format (64 characters).
+            Leave empty to require configuration through provisioning API.
+
+endmenu

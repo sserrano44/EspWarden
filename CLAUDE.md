@@ -73,9 +73,9 @@ Currently ~75% complete. Critical unimplemented components that require attentio
 
 ### Mode Switching Logic
 
-The device determines its operational mode at boot via GPIO pins:
-- **Provisioning Mode**: GPIO 2 + GPIO 4 connected to GND → Allows configuration changes
-- **Signing Mode**: GPIOs disconnected → Read-only operation, only signs transactions
+The device determines its operational mode at boot via GPIO pin:
+- **Provisioning Mode**: GPIO 2 connected to GND → Allows configuration changes
+- **Signing Mode**: GPIO 2 disconnected → Read-only operation, only signs transactions
 
 This is enforced in `device_mode.c` and checked by all API handlers in `api_handlers.c`.
 
@@ -120,13 +120,12 @@ Never use development configuration with real funds.
 
 Minimum hardware requirements:
 - ESP32 NodeMCU-32S or compatible
-- 2 jumper wires for provisioning mode
+- 1 jumper wire for provisioning mode
 - USB cable for power/programming
 
 GPIO connections for provisioning:
 ```
-GPIO 2 ──┬── GND
-GPIO 4 ──┘
+GPIO 2 ──── GND
 ```
 
 ## PRD Compliance

@@ -15,9 +15,8 @@ typedef enum {
     DEVICE_MODE_SIGNING = 1
 } device_mode_t;
 
-// GPIO pins for provisioning jumper
+// GPIO pin for provisioning jumper
 #define PROVISIONING_PIN_A GPIO_NUM_2
-#define PROVISIONING_PIN_B GPIO_NUM_4
 
 // Authentication and session
 #define AUTH_KEY_SIZE 32
