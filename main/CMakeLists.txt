@@ -22,7 +22,7 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "include"
-    EMBED_FILES
+    EMBED_TXTFILES
         "certs/server_cert.pem"
         "certs/server_key.pem"
     REQUIRES
