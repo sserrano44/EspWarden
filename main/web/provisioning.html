@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ESP32 Remote Signer Setup</title>
+    <meta name='viewport' content='width=device-width,initial-scale=1'>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 500px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .section {
+            margin-bottom: 25px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .section h3 {
+            margin-top: 0;
+            color: #34495e;
+        }
+        input[type=text], input[type=password] {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            display: none;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <h1>🔐 ESP32 Remote Signer</h1>
+        <p>Configure your device for secure transaction signing</p>
+
+        <div class='section'>
+            <h3>1. WiFi Configuration</h3>
+            <form id='wifiForm'>
+                <input type='text' id='ssid' placeholder='WiFi Network Name (SSID)' required>
+                <input type='password' id='password' placeholder='WiFi Password' required>
+                <button type='submit'>Save WiFi Credentials</button>
+            </form>
+            <div id='wifiStatus' class='status'></div>
+        </div>
+
+        <div class='section'>
+            <h3>2. Authentication Key</h3>
+            <form id='authForm'>
+                <input type='password' id='authKey' placeholder='256-bit hex key (64 characters)' maxlength='64' required>
+                <small style='color:#666;font-size:12px'>Generate: <code>openssl rand -hex 32</code></small>
+                <button type='submit'>Set Auth Key</button>
+            </form>
+            <div id='authStatus' class='status'></div>
+        </div>
+
+        <div class='section'>
+            <h3>3. Signing Key Management</h3>
+            <div id='keyInfo' style='margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:4px;display:none'>
+                <strong>Current Address:</strong> <span id='currentAddress'></span>
+            </div>
+            <form id='keyForm'>
+                <div style='margin-bottom:15px'>
+                    <label><input type='radio' name='keyMode' value='generate' checked> Generate New Key</label><br>
+                    <label><input type='radio' name='keyMode' value='import'> Import Existing Key</label>
+                </div>
+                <div id='importKeyDiv' style='display:none;margin-bottom:15px'>
+                    <input type='text' id='importKey' placeholder='Private key (64 hex characters)' maxlength='64'>
+                    <small style='color:#666;font-size:12px'>32-byte private key in hexadecimal format</small>
+                </div>
+                <button type='submit' id='keyButton'>Generate Key</button>
+            </form>
+            <div id='keyStatus' class='status'></div>
+            <div id='keyBackup' style='display:none;margin-top:15px;padding:15px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:4px'>
+                <strong style='color:#856404'>⚠️ BACKUP YOUR PRIVATE KEY</strong><br>
+                <span style='font-size:12px;color:#856404'>Store this key securely. If lost, you cannot recover your funds!</span><br>
+                <div style='margin:10px 0;padding:10px;background:#f8f9fa;border-radius:4px;font-family:monospace;word-break:break-all;font-size:12px'>
+                    <strong>Private Key:</strong><br><span id='backupPrivateKey'></span><br><br>
+                    <strong>Address:</strong><br><span id='backupAddress'></span>
+                </div>
+                <button onclick='copyToClipboard()' style='background:#28a745;font-size:12px;padding:5px 10px'>Copy Private Key</button>
+            </div>
+        </div>
+
+        <div class='section'>
+            <h3>4. Transaction Policy</h3>
+            <form id='policyForm'>
+                <input type='text' id='chains' placeholder='Allowed chains (e.g., 1,10,8453)' required>
+                <input type='text' id='addresses' placeholder='Whitelisted addresses (comma separated)'>
+                <input type='text' id='maxValue' placeholder='Max value in wei (e.g., 100000000000000000)' required>
+                <button type='submit'>Set Policy</button>
+            </form>
+            <div id='policyStatus' class='status'></div>
+        </div>
+
+        <div class='section'>
+            <h3>5. Complete Setup</h3>
+            <p>After configuring all settings, remove the provisioning jumper and restart the device.</p>
+            <button onclick='reboot()'>Restart Device</button>
+        </div>
+    </div>
+
+    <script>
+        function showStatus(elementId, message, isError) {
+            const el = document.getElementById(elementId);
+            el.textContent = message;
+            el.className = 'status ' + (isError ? 'error' : 'success');
+            el.style.display = 'block';
+        }
+
+        async function checkKeyStatus() {
+            try {
+                const response = await fetch('/key/status');
+                const data = await response.json();
+                if (data.hasKey && data.address) {
+                    document.getElementById('currentAddress').textContent = data.address;
+                    document.getElementById('keyInfo').style.display = 'block';
+                    document.getElementById('keyButton').textContent = 'Generate New Key (overwrites existing)';
+                }
+            } catch (error) {
+                console.log('Could not fetch key status:', error);
+            }
+        }
+
+        /* Check key status on page load */
+        window.onload = function() {
+            checkKeyStatus();
+
+            /* Handle key mode radio button changes */
+            document.querySelectorAll('input[name="keyMode"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    const importDiv = document.getElementById('importKeyDiv');
+                    const button = document.getElementById('keyButton');
+                    if (this.value === 'import') {
+                        importDiv.style.display = 'block';
+                        button.textContent = 'Import Key';
+                    } else {
+                        importDiv.style.display = 'none';
+                        button.textContent = 'Generate Key';
+                    }
+                });
+            });
+        };
+
+        async function submitForm(url, data, statusId) {
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const result = await response.text();
+                if (response.ok) {
+                    showStatus(statusId, 'Success!', false);
+                    return true;
+                } else {
+                    showStatus(statusId, 'Error: ' + result, true);
+                    return false;
+                }
+            } catch (error) {
+                showStatus(statusId, 'Error: ' + error.message, true);
+                return false;
+            }
+        }
+
+        document.getElementById('wifiForm').onsubmit = function(e) {
+            e.preventDefault();
+            const data = {
+                ssid: document.getElementById('ssid').value,
+                password: document.getElementById('password').value
+            };
+            submitForm('/wifi', data, 'wifiStatus');
+        };
+
+        document.getElementById('authForm').onsubmit = function(e) {
+            e.preventDefault();
+            const key = document.getElementById('authKey').value;
+            if (key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
+                showStatus('authStatus', 'Key must be 64 hex characters', true);
+                return;
+            }
+            submitForm('/auth', {key: key}, 'authStatus');
+        };
+
+        document.getElementById('keyForm').onsubmit = async function(e) {
+            e.preventDefault();
+            const mode = document.querySelector('input[name="keyMode"]:checked').value;
+            let data = {mode: mode};
+
+            if (mode === 'import') {
+                const key = document.getElementById('importKey').value;
+                if (!key || key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
+                    showStatus('keyStatus', 'Private key must be 64 hex characters', true);
+                    return;
+                }
+                data.key = key;
+            }
+
+            const response = await fetch('/key', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                showStatus('keyStatus', 'Success!', false);
+                /* Show backup information */
+                if (result.privateKey) {
+                    document.getElementById('backupPrivateKey').textContent = result.privateKey;
+                    document.getElementById('backupAddress').textContent = result.address;
+                    document.getElementById('keyBackup').style.display = 'block';
+                }
+                /* Refresh key status */
+                checkKeyStatus();
+            } else {
+                const error = await response.text();
+                showStatus('keyStatus', 'Error: ' + error, true);
+            }
+        };
+
+        document.getElementById('policyForm').onsubmit = function(e) {
+            e.preventDefault();
+            const chains = document.getElementById('chains').value.split(',').map(x => parseInt(x.trim()));
+            const addresses = document.getElementById('addresses').value.split(',').map(x => x.trim()).filter(x => x);
+            const data = {
+                allowedChains: chains,
+                toWhitelist: addresses,
+                maxValueWei: document.getElementById('maxValue').value
+            };
+            submitForm('/policy', data, 'policyStatus');
+        };
+
+        function copyToClipboard() {
+            const privateKey = document.getElementById('backupPrivateKey').textContent;
+            navigator.clipboard.writeText(privateKey).then(() => {
+                alert('Private key copied to clipboard!');
+            }).catch(() => {
+                /* Fallback for older browsers */
+                const textArea = document.createElement('textarea');
+                textArea.value = privateKey;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                alert('Private key copied to clipboard!');
+            });
+        }
+
+        function reboot() {
+            if (confirm('Restart the device? Make sure to remove the provisioning jumper first.')) {
+                fetch('/reboot', {method: 'POST'});
+            }
+        }
+    </script>
+</body>
+</html>

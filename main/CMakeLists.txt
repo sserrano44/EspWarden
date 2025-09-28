@@ -26,6 +26,7 @@ idf_component_register(
     EMBED_TXTFILES
         "certs/server_cert.pem"
         "certs/server_key.pem"
+        "web/provisioning.html"
     REQUIRES
         nvs_flash
         esp_wifi

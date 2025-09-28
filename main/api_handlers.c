@@ -17,6 +17,9 @@
 
 static const char *TAG = "API_HANDLERS";
 
+// Helper function declarations
+esp_err_t hex_to_bytes(const char *hex_str, uint8_t *bytes, size_t bytes_len);
+
 esp_err_t api_handle_health(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /health request");
@@ -268,15 +271,15 @@ esp_err_t api_handle_auth_config(httpd_req_t *req)
                                  "Invalid JSON in request body", NULL);
     }
 
-    cJSON *password = cJSON_GetObjectItem(json, "password");
-    if (!cJSON_IsString(password)) {
+    cJSON *key = cJSON_GetObjectItem(json, "key");
+    if (!cJSON_IsString(key)) {
         cJSON_Delete(json);
         return send_error_response(req, 400, "MISSING_FIELDS",
-                                 "Missing password field", NULL);
+                                 "Missing key field", NULL);
     }
 
     // Set the auth key
-    esp_err_t ret = auth_manager_set_auth_key(password->valuestring);
+    esp_err_t ret = auth_manager_set_auth_key(key->valuestring);
     cJSON_Delete(json);
 
     if (ret != ESP_OK) {
@@ -302,9 +305,198 @@ esp_err_t api_handle_key_config(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /key configuration request");
 
-    // TODO: Implement key generation/import and storage
-    return send_error_response(req, 501, "NOT_IMPLEMENTED",
-                             "Key configuration not yet implemented", NULL);
+    // Read request body
+    char buf[512];
+    int total_len = req->content_len;
+    int cur_len = 0;
+    int received = 0;
+
+    if (total_len >= sizeof(buf)) {
+        return send_error_response(req, 400, "PAYLOAD_TOO_LARGE",
+                                 "Request payload too large", NULL);
+    }
+
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len);
+        if (received <= 0) {
+            return send_error_response(req, 400, "REQUEST_READ_ERROR",
+                                     "Failed to read request body", NULL);
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    // Parse JSON
+    cJSON *json = cJSON_Parse(buf);
+    if (json == NULL) {
+        return send_error_response(req, 400, "INVALID_JSON",
+                                 "Invalid JSON in request body", NULL);
+    }
+
+    cJSON *mode = cJSON_GetObjectItem(json, "mode");
+    if (!cJSON_IsString(mode)) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "MISSING_FIELDS",
+                                 "Missing mode field", NULL);
+    }
+
+    uint8_t private_key[32];
+    esp_err_t ret = ESP_FAIL;
+
+    if (strcmp(mode->valuestring, "generate") == 0) {
+        // Generate new private key
+        ret = crypto_generate_private_key(private_key);
+        if (ret != ESP_OK) {
+            cJSON_Delete(json);
+            return send_error_response(req, 500, "KEY_GENERATION_FAILED",
+                                     "Failed to generate private key", NULL);
+        }
+        ESP_LOGI(TAG, "Generated new private key");
+    } else if (strcmp(mode->valuestring, "import") == 0) {
+        // Import existing private key
+        cJSON *key_hex = cJSON_GetObjectItem(json, "key");
+        if (!cJSON_IsString(key_hex)) {
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "MISSING_FIELDS",
+                                     "Missing key field for import", NULL);
+        }
+
+        ret = hex_to_bytes(key_hex->valuestring, private_key, 32);
+        if (ret != ESP_OK) {
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "INVALID_KEY_FORMAT",
+                                     "Invalid private key format", NULL);
+        }
+        ESP_LOGI(TAG, "Imported private key from hex");
+    } else {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "INVALID_MODE",
+                                 "Mode must be 'generate' or 'import'", NULL);
+    }
+
+    cJSON_Delete(json);
+
+    // Store the private key
+    ret = storage_set_private_key(private_key);
+    if (ret != ESP_OK) {
+        // Clear private key from memory
+        memset(private_key, 0, sizeof(private_key));
+        return send_error_response(req, 500, "STORAGE_FAILED",
+                                 "Failed to store private key", NULL);
+    }
+
+    // Derive public key and Ethereum address
+    uint8_t public_key[64];
+    uint8_t eth_address[20];
+
+    ret = crypto_get_public_key(private_key, public_key);
+    if (ret != ESP_OK) {
+        memset(private_key, 0, sizeof(private_key));
+        return send_error_response(req, 500, "KEY_DERIVATION_FAILED",
+                                 "Failed to derive public key", NULL);
+    }
+
+    ret = crypto_get_ethereum_address(public_key, eth_address);
+    if (ret != ESP_OK) {
+        memset(private_key, 0, sizeof(private_key));
+        return send_error_response(req, 500, "ADDRESS_DERIVATION_FAILED",
+                                 "Failed to derive Ethereum address", NULL);
+    }
+
+    // Format private key as hex string for backup
+    char private_key_str[65]; // 64 hex chars + null terminator
+    for (int i = 0; i < 32; i++) {
+        snprintf(private_key_str + (i * 2), 3, "%02x", private_key[i]);
+    }
+
+    // Format Ethereum address as hex string
+    char address_str[43]; // "0x" + 40 hex chars + null terminator
+    snprintf(address_str, sizeof(address_str), "0x");
+    for (int i = 0; i < 20; i++) {
+        snprintf(address_str + 2 + (i * 2), 3, "%02x", eth_address[i]);
+    }
+
+    // Create response
+    cJSON *response = cJSON_CreateObject();
+    cJSON *success = cJSON_CreateBool(true);
+    cJSON *address = cJSON_CreateString(address_str);
+    cJSON *private_key_json = cJSON_CreateString(private_key_str);
+
+    cJSON_AddItemToObject(response, "success", success);
+    cJSON_AddItemToObject(response, "address", address);
+    cJSON_AddItemToObject(response, "privateKey", private_key_json);
+
+    // Clear private key from memory immediately after creating JSON
+    memset(private_key, 0, sizeof(private_key));
+
+    char *response_string = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_string);
+
+    free(response_string);
+    cJSON_Delete(response);
+
+    return send_ret;
+}
+
+esp_err_t api_handle_key_status(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Handling /key/status request");
+
+    bool has_key = storage_has_private_key();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON *has_key_json = cJSON_CreateBool(has_key);
+    cJSON_AddItemToObject(response, "hasKey", has_key_json);
+
+    if (has_key) {
+        // Retrieve private key and derive address
+        uint8_t private_key[32];
+        esp_err_t ret = storage_get_private_key(private_key);
+
+        if (ret == ESP_OK) {
+            uint8_t public_key[64];
+            uint8_t eth_address[20];
+
+            ret = crypto_get_public_key(private_key, public_key);
+            if (ret == ESP_OK) {
+                ret = crypto_get_ethereum_address(public_key, eth_address);
+                if (ret == ESP_OK) {
+                    // Format Ethereum address as hex string
+                    char address_str[43]; // "0x" + 40 hex chars + null terminator
+                    snprintf(address_str, sizeof(address_str), "0x");
+                    for (int i = 0; i < 20; i++) {
+                        snprintf(address_str + 2 + (i * 2), 3, "%02x", eth_address[i]);
+                    }
+
+                    cJSON *address = cJSON_CreateString(address_str);
+                    cJSON_AddItemToObject(response, "address", address);
+                } else {
+                    cJSON *address = cJSON_CreateNull();
+                    cJSON_AddItemToObject(response, "address", address);
+                }
+            } else {
+                cJSON *address = cJSON_CreateNull();
+                cJSON_AddItemToObject(response, "address", address);
+            }
+
+            // Clear private key from memory
+            memset(private_key, 0, sizeof(private_key));
+        } else {
+            cJSON *address = cJSON_CreateNull();
+            cJSON_AddItemToObject(response, "address", address);
+        }
+    } else {
+        cJSON *address = cJSON_CreateNull();
+        cJSON_AddItemToObject(response, "address", address);
+    }
+
+    char *response_string = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_string);
+
+    free(response_string);
+    cJSON_Delete(response);
+
+    return send_ret;
 }
 
 esp_err_t api_handle_policy_config(httpd_req_t *req)
@@ -326,7 +518,7 @@ esp_err_t api_handle_wipe(httpd_req_t *req)
 }
 
 // Helper function to convert hex string to bytes
-__attribute__((unused)) static esp_err_t hex_to_bytes(const char *hex_str, uint8_t *bytes, size_t bytes_len)
+esp_err_t hex_to_bytes(const char *hex_str, uint8_t *bytes, size_t bytes_len)
 {
     if (!hex_str || !bytes) {
         return ESP_ERR_INVALID_ARG;

@@ -1,5 +1,4 @@
 #include "https_server.h"
-#include "provisioning_page.h"
 #include "esp_https_server.h"
 #include "esp_log.h"
 #include "cJSON.h"
@@ -16,6 +15,10 @@ extern const uint8_t server_cert_pem_start[] asm("_binary_server_cert_pem_start"
 extern const uint8_t server_cert_pem_end[]   asm("_binary_server_cert_pem_end");
 extern const uint8_t server_key_pem_start[]  asm("_binary_server_key_pem_start");
 extern const uint8_t server_key_pem_end[]    asm("_binary_server_key_pem_end");
+
+// Embedded provisioning HTML page
+extern const uint8_t provisioning_html_start[] asm("_binary_provisioning_html_start");
+extern const uint8_t provisioning_html_end[]   asm("_binary_provisioning_html_end");
 
 // Helper function to send JSON response
 esp_err_t send_json_response(httpd_req_t *req, int status_code, const char *json_data)
@@ -113,6 +116,18 @@ static esp_err_t key_post_handler(httpd_req_t *req)
     return api_handle_key_config(req);
 }
 
+// Key status - GET /key/status (provisioning mode only)
+static esp_err_t key_status_get_handler(httpd_req_t *req)
+{
+    if (!is_provisioning_mode()) {
+        return send_error_response(req, 403, "MODE_READ_ONLY",
+                                 "Key status not available in signing mode",
+                                 "DEVICE_IN_SIGNING_MODE");
+    }
+
+    return api_handle_key_status(req);
+}
+
 // Policy configuration - POST /policy (provisioning mode only)
 static esp_err_t policy_post_handler(httpd_req_t *req)
 {
@@ -167,7 +182,10 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     if (is_provisioning_mode()) {
         // Serve provisioning page
         httpd_resp_set_type(req, "text/html");
-        return httpd_resp_send(req, provisioning_html, strlen(provisioning_html));
+        httpd_resp_set_hdr(req, "Content-Security-Policy",
+                          "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'");
+        size_t html_len = provisioning_html_end - provisioning_html_start;
+        return httpd_resp_send(req, (const char *)provisioning_html_start, html_len);
     } else {
         // Serve device status page
         cJSON *json = cJSON_CreateObject();
@@ -302,6 +320,14 @@ esp_err_t https_server_start(void)
         .user_ctx  = NULL
     };
     httpd_register_uri_handler(server, &key_uri);
+
+    httpd_uri_t key_status_uri = {
+        .uri       = "/key/status",
+        .method    = HTTP_GET,
+        .handler   = key_status_get_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &key_status_uri);
 
     httpd_uri_t policy_uri = {
         .uri       = "/policy",
