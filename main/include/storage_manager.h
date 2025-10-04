@@ -2,6 +2,7 @@
 #define STORAGE_MANAGER_H
 
 #include "esp_err.h"
+#include "esp32_signer.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -14,6 +15,11 @@ esp_err_t storage_manager_init(void);
 esp_err_t storage_set_private_key(const uint8_t key[32]);
 esp_err_t storage_get_private_key(uint8_t key[32]);
 bool storage_has_private_key(void);
+
+// Policy storage
+esp_err_t storage_set_policy(const policy_t *policy);
+esp_err_t storage_get_policy(policy_t *policy);
+bool storage_has_policy(void);
 
 #ifdef __cplusplus
 }

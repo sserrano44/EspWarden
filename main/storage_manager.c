@@ -6,6 +6,7 @@
 
 static const char *TAG = "STORAGE_MANAGER";
 static const char *PRIVATE_KEY_NVS_KEY = "private_key";
+static const char *POLICY_NVS_KEY = "policy";
 
 esp_err_t storage_manager_init(void)
 {
@@ -101,4 +102,84 @@ bool storage_has_private_key(void)
     nvs_close(nvs_handle);
 
     return (err == ESP_OK && required_size == 32);
+}
+
+esp_err_t storage_set_policy(const policy_t *policy)
+{
+    if (!policy) {
+        ESP_LOGE(TAG, "Policy is NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error opening NVS handle: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_blob(nvs_handle, POLICY_NVS_KEY, policy, sizeof(policy_t));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error saving policy: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    err = nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error committing policy: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Policy saved successfully");
+    return ESP_OK;
+}
+
+esp_err_t storage_get_policy(policy_t *policy)
+{
+    if (!policy) {
+        ESP_LOGE(TAG, "Policy buffer is NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot open NVS handle for reading policy");
+        return err;
+    }
+
+    size_t required_size = sizeof(policy_t);
+    err = nvs_get_blob(nvs_handle, POLICY_NVS_KEY, policy, &required_size);
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Policy not found in storage");
+        return err;
+    }
+
+    if (required_size != sizeof(policy_t)) {
+        ESP_LOGE(TAG, "Invalid policy size in storage: %zu", required_size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    ESP_LOGD(TAG, "Policy retrieved from storage");
+    return ESP_OK;
+}
+
+bool storage_has_policy(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    size_t required_size = 0;
+    err = nvs_get_blob(nvs_handle, POLICY_NVS_KEY, NULL, &required_size);
+    nvs_close(nvs_handle);
+
+    return (err == ESP_OK && required_size == sizeof(policy_t));
 }

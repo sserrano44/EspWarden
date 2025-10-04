@@ -140,6 +140,18 @@ static esp_err_t policy_post_handler(httpd_req_t *req)
     return api_handle_policy_config(req);
 }
 
+// Policy status - GET /policy/status (provisioning mode only)
+static esp_err_t policy_status_get_handler(httpd_req_t *req)
+{
+    if (!is_provisioning_mode()) {
+        return send_error_response(req, 403, "MODE_READ_ONLY",
+                                 "Policy status not available in signing mode",
+                                 "DEVICE_IN_SIGNING_MODE");
+    }
+
+    return api_handle_policy_status(req);
+}
+
 // Wipe configuration - POST /wipe (provisioning mode only)
 static esp_err_t wipe_post_handler(httpd_req_t *req)
 {
@@ -336,6 +348,14 @@ esp_err_t https_server_start(void)
         .user_ctx  = NULL
     };
     httpd_register_uri_handler(server, &policy_uri);
+
+    httpd_uri_t policy_status_uri = {
+        .uri       = "/policy/status",
+        .method    = HTTP_GET,
+        .handler   = policy_status_get_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &policy_status_uri);
 
     httpd_uri_t wipe_uri = {
         .uri       = "/wipe",

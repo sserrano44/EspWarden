@@ -58,19 +58,21 @@ typedef enum {
 
 // Policy structure
 typedef struct {
+    // Chain IDs whitelist (empty = any chain allowed)
     uint32_t allowed_chains[MAX_CHAINS];
     uint8_t num_chains;
 
-    uint8_t to_whitelist[MAX_WHITELISTED_ADDRESSES][20];
-    uint8_t num_whitelisted_addresses;
+    // Recipient addresses whitelist for native ETH and ERC-20 transfers (empty = any recipient)
+    uint8_t recipient_whitelist[MAX_WHITELISTED_ADDRESSES][20];
+    uint8_t num_recipients;
 
-    uint8_t function_whitelist[MAX_FUNCTION_SELECTORS][4];
-    uint8_t num_function_selectors;
+    // ERC-20 token contract addresses whitelist (empty = any ERC-20 token)
+    uint8_t erc20_whitelist[MAX_WHITELISTED_ADDRESSES][20];
+    uint8_t num_erc20_tokens;
 
-    char max_value_wei[32];
-    uint32_t max_gas_limit;
-    char max_fee_per_gas_wei[32];
-    bool allow_empty_data_to_whitelist;
+    // Smart contract addresses whitelist for interactions (empty = any contract)
+    uint8_t contract_whitelist[MAX_WHITELISTED_ADDRESSES][20];
+    uint8_t num_contracts;
 } policy_t;
 
 // Transaction structures

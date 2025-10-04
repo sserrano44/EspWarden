@@ -19,6 +19,7 @@ static const char *TAG = "API_HANDLERS";
 
 // Helper function declarations
 esp_err_t hex_to_bytes(const char *hex_str, uint8_t *bytes, size_t bytes_len);
+static void bytes_to_hex(const uint8_t *bytes, size_t bytes_len, char *hex_str);
 
 esp_err_t api_handle_health(httpd_req_t *req)
 {
@@ -503,9 +504,213 @@ esp_err_t api_handle_policy_config(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /policy configuration request");
 
-    // TODO: Implement policy storage and validation
-    return send_error_response(req, 501, "NOT_IMPLEMENTED",
-                             "Policy configuration not yet implemented", NULL);
+    // Read request body
+    size_t content_len = req->content_len;
+    if (content_len == 0 || content_len > 4096) {
+        return send_error_response(req, 400, "INVALID_REQUEST",
+                                 "Invalid content length", NULL);
+    }
+
+    char *buffer = malloc(content_len + 1);
+    if (!buffer) {
+        return send_error_response(req, 500, "INTERNAL_ERROR",
+                                 "Memory allocation failed", NULL);
+    }
+
+    int ret = httpd_req_recv(req, buffer, content_len);
+    if (ret <= 0) {
+        free(buffer);
+        return send_error_response(req, 400, "INVALID_REQUEST",
+                                 "Failed to receive request body", NULL);
+    }
+    buffer[content_len] = 0;
+
+    cJSON *json = cJSON_Parse(buffer);
+    free(buffer);
+
+    if (!json) {
+        return send_error_response(req, 400, "INVALID_JSON",
+                                 "Invalid JSON format", NULL);
+    }
+
+    // Initialize policy structure
+    policy_t policy;
+    memset(&policy, 0, sizeof(policy_t));
+
+    // Parse chain IDs whitelist
+    cJSON *chain_ids = cJSON_GetObjectItem(json, "chainIds");
+    if (chain_ids && cJSON_IsArray(chain_ids)) {
+        int chain_count = cJSON_GetArraySize(chain_ids);
+        if (chain_count > MAX_CHAINS) {
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "TOO_MANY_CHAINS",
+                                     "Too many chain IDs", NULL);
+        }
+        for (int i = 0; i < chain_count; i++) {
+            cJSON *chain_item = cJSON_GetArrayItem(chain_ids, i);
+            if (cJSON_IsNumber(chain_item)) {
+                policy.allowed_chains[policy.num_chains++] = (uint32_t)cJSON_GetNumberValue(chain_item);
+            }
+        }
+    }
+
+    // Parse recipient whitelist
+    cJSON *recipients = cJSON_GetObjectItem(json, "recipientWhitelist");
+    if (recipients && cJSON_IsArray(recipients)) {
+        int recipient_count = cJSON_GetArraySize(recipients);
+        if (recipient_count > MAX_WHITELISTED_ADDRESSES) {
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "TOO_MANY_RECIPIENTS",
+                                     "Too many recipient addresses", NULL);
+        }
+        for (int i = 0; i < recipient_count; i++) {
+            cJSON *addr_item = cJSON_GetArrayItem(recipients, i);
+            if (cJSON_IsString(addr_item)) {
+                const char *addr_str = cJSON_GetStringValue(addr_item);
+                if (strlen(addr_str) == 42 && strncmp(addr_str, "0x", 2) == 0) {
+                    esp_err_t hex_ret = hex_to_bytes(addr_str + 2, policy.recipient_whitelist[policy.num_recipients], 20);
+                    if (hex_ret == ESP_OK) {
+                        policy.num_recipients++;
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse ERC-20 token whitelist
+    cJSON *erc20_tokens = cJSON_GetObjectItem(json, "erc20Whitelist");
+    if (erc20_tokens && cJSON_IsArray(erc20_tokens)) {
+        int token_count = cJSON_GetArraySize(erc20_tokens);
+        if (token_count > MAX_WHITELISTED_ADDRESSES) {
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "TOO_MANY_TOKENS",
+                                     "Too many ERC-20 token addresses", NULL);
+        }
+        for (int i = 0; i < token_count; i++) {
+            cJSON *addr_item = cJSON_GetArrayItem(erc20_tokens, i);
+            if (cJSON_IsString(addr_item)) {
+                const char *addr_str = cJSON_GetStringValue(addr_item);
+                if (strlen(addr_str) == 42 && strncmp(addr_str, "0x", 2) == 0) {
+                    esp_err_t hex_ret = hex_to_bytes(addr_str + 2, policy.erc20_whitelist[policy.num_erc20_tokens], 20);
+                    if (hex_ret == ESP_OK) {
+                        policy.num_erc20_tokens++;
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse contract interaction whitelist
+    cJSON *contracts = cJSON_GetObjectItem(json, "contractWhitelist");
+    if (contracts && cJSON_IsArray(contracts)) {
+        int contract_count = cJSON_GetArraySize(contracts);
+        if (contract_count > MAX_WHITELISTED_ADDRESSES) {
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "TOO_MANY_CONTRACTS",
+                                     "Too many contract addresses", NULL);
+        }
+        for (int i = 0; i < contract_count; i++) {
+            cJSON *addr_item = cJSON_GetArrayItem(contracts, i);
+            if (cJSON_IsString(addr_item)) {
+                const char *addr_str = cJSON_GetStringValue(addr_item);
+                if (strlen(addr_str) == 42 && strncmp(addr_str, "0x", 2) == 0) {
+                    esp_err_t hex_ret = hex_to_bytes(addr_str + 2, policy.contract_whitelist[policy.num_contracts], 20);
+                    if (hex_ret == ESP_OK) {
+                        policy.num_contracts++;
+                    }
+                }
+            }
+        }
+    }
+
+    // Save policy to storage
+    esp_err_t save_ret = save_policy(&policy);
+    if (save_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "STORAGE_ERROR",
+                                 "Failed to save policy", NULL);
+    }
+
+    // Create response
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "status", "OK");
+    cJSON_AddNumberToObject(response, "chainsConfigured", policy.num_chains);
+    cJSON_AddNumberToObject(response, "recipientsConfigured", policy.num_recipients);
+    cJSON_AddNumberToObject(response, "tokensConfigured", policy.num_erc20_tokens);
+    cJSON_AddNumberToObject(response, "contractsConfigured", policy.num_contracts);
+
+    char *response_str = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_str);
+
+    free(response_str);
+    cJSON_Delete(response);
+    cJSON_Delete(json);
+
+    ESP_LOGI(TAG, "Policy configuration saved successfully");
+    return send_ret;
+}
+
+esp_err_t api_handle_policy_status(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Handling /policy/status request");
+
+    // Load current policy
+    policy_t policy;
+    esp_err_t policy_ret = load_policy(&policy);
+    bool has_policy = (policy_ret == ESP_OK && storage_has_policy());
+
+    // Create response JSON
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "hasPolicy", has_policy);
+
+    // Add chain IDs array
+    cJSON *chain_ids_array = cJSON_CreateArray();
+    for (uint8_t i = 0; i < policy.num_chains; i++) {
+        cJSON_AddItemToArray(chain_ids_array, cJSON_CreateNumber(policy.allowed_chains[i]));
+    }
+    cJSON_AddItemToObject(response, "chainIds", chain_ids_array);
+
+    // Add recipient addresses array
+    cJSON *recipients_array = cJSON_CreateArray();
+    for (uint8_t i = 0; i < policy.num_recipients; i++) {
+        char addr_hex[43]; // "0x" + 40 chars + null terminator
+        addr_hex[0] = '0';
+        addr_hex[1] = 'x';
+        bytes_to_hex(policy.recipient_whitelist[i], 20, addr_hex + 2);
+        cJSON_AddItemToArray(recipients_array, cJSON_CreateString(addr_hex));
+    }
+    cJSON_AddItemToObject(response, "recipientWhitelist", recipients_array);
+
+    // Add ERC-20 token addresses array
+    cJSON *erc20_array = cJSON_CreateArray();
+    for (uint8_t i = 0; i < policy.num_erc20_tokens; i++) {
+        char addr_hex[43];
+        addr_hex[0] = '0';
+        addr_hex[1] = 'x';
+        bytes_to_hex(policy.erc20_whitelist[i], 20, addr_hex + 2);
+        cJSON_AddItemToArray(erc20_array, cJSON_CreateString(addr_hex));
+    }
+    cJSON_AddItemToObject(response, "erc20Whitelist", erc20_array);
+
+    // Add contract addresses array
+    cJSON *contracts_array = cJSON_CreateArray();
+    for (uint8_t i = 0; i < policy.num_contracts; i++) {
+        char addr_hex[43];
+        addr_hex[0] = '0';
+        addr_hex[1] = 'x';
+        bytes_to_hex(policy.contract_whitelist[i], 20, addr_hex + 2);
+        cJSON_AddItemToArray(contracts_array, cJSON_CreateString(addr_hex));
+    }
+    cJSON_AddItemToObject(response, "contractWhitelist", contracts_array);
+
+    char *response_str = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_str);
+
+    free(response_str);
+    cJSON_Delete(response);
+
+    ESP_LOGI(TAG, "Policy status sent successfully");
+    return send_ret;
 }
 
 esp_err_t api_handle_wipe(httpd_req_t *req)
@@ -622,18 +827,80 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
                                  "Missing required transaction fields", NULL);
     }
 
-    uint32_t chain_id = (uint32_t)cJSON_GetNumberValue(chain_id_json);
+    // Build transaction structure for policy validation
+    eip1559_tx_t tx;
+    tx.chain_id = (uint32_t)cJSON_GetNumberValue(chain_id_json);
+    strncpy(tx.nonce, cJSON_GetStringValue(nonce_json), sizeof(tx.nonce) - 1);
+    strncpy(tx.max_fee_per_gas, cJSON_GetStringValue(max_fee_json), sizeof(tx.max_fee_per_gas) - 1);
+    strncpy(tx.max_priority_fee_per_gas, cJSON_GetStringValue(max_priority_json), sizeof(tx.max_priority_fee_per_gas) - 1);
+    strncpy(tx.gas_limit, cJSON_GetStringValue(gas_limit_json), sizeof(tx.gas_limit) - 1);
+    strncpy(tx.value, cJSON_GetStringValue(value_json), sizeof(tx.value) - 1);
+
+    // Parse 'to' address
+    const char *to_str = cJSON_GetStringValue(to_json);
+    if (strlen(to_str) != 42 || strncmp(to_str, "0x", 2) != 0) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "INVALID_ADDRESS",
+                                 "Invalid 'to' address format", NULL);
+    }
+    esp_err_t hex_ret = hex_to_bytes(to_str + 2, tx.to, 20);
+    if (hex_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "INVALID_ADDRESS",
+                                 "Failed to parse 'to' address", NULL);
+    }
+
+    // Parse transaction data
+    const char *data_str = cJSON_GetStringValue(data_json);
+    if (data_str && strlen(data_str) > 2 && strncmp(data_str, "0x", 2) == 0) {
+        size_t data_hex_len = strlen(data_str) - 2;
+        tx.data_len = data_hex_len / 2;
+        tx.data = malloc(tx.data_len);
+        if (!tx.data) {
+            cJSON_Delete(json);
+            return send_error_response(req, 500, "INTERNAL_ERROR",
+                                     "Memory allocation failed", NULL);
+        }
+        hex_ret = hex_to_bytes(data_str + 2, tx.data, tx.data_len);
+        if (hex_ret != ESP_OK) {
+            free(tx.data);
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "INVALID_DATA",
+                                     "Failed to parse transaction data", NULL);
+        }
+    } else {
+        tx.data = NULL;
+        tx.data_len = 0;
+    }
+
+    // Load and validate against policy
+    policy_t policy;
+    esp_err_t policy_ret = load_policy(&policy);
+    if (policy_ret != ESP_OK) {
+        if (tx.data) free(tx.data);
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "POLICY_ERROR",
+                                 "Failed to load policy", NULL);
+    }
+
+    esp_err_t validation_ret = validate_eip1559_transaction(&tx, &policy);
+    if (validation_ret != ESP_OK) {
+        if (tx.data) free(tx.data);
+        cJSON_Delete(json);
+        return send_error_response(req, 403, "POLICY_VIOLATION",
+                                 "Transaction violates policy", NULL);
+    }
 
     // TODO: Create transaction hash for EIP-1559
     // This is a simplified implementation - in production you would need proper RLP encoding
     transaction_hash_t tx_hash;
-    tx_hash.chain_id = chain_id;
+    tx_hash.chain_id = tx.chain_id;
 
     // Create a simple hash from the transaction data (this is not correct EIP-1559 encoding)
     char tx_string[1024];
     snprintf(tx_string, sizeof(tx_string),
              "%lu:%s:%s:%s:%s:%s:%s:%s",
-             (unsigned long)chain_id,
+             (unsigned long)tx.chain_id,
              cJSON_GetStringValue(nonce_json),
              cJSON_GetStringValue(max_fee_json),
              cJSON_GetStringValue(max_priority_json),
@@ -679,6 +946,7 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
     free(response_str);
     cJSON_Delete(response);
     cJSON_Delete(json);
+    if (tx.data) free(tx.data);
 
     ESP_LOGI(TAG, "EIP-1559 transaction signed successfully");
     return send_ret;
@@ -739,18 +1007,79 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
                                  "Missing required transaction fields", NULL);
     }
 
-    uint32_t chain_id = (uint32_t)cJSON_GetNumberValue(chain_id_json);
+    // Build transaction structure for policy validation
+    eip155_tx_t tx;
+    tx.chain_id = (uint32_t)cJSON_GetNumberValue(chain_id_json);
+    strncpy(tx.nonce, cJSON_GetStringValue(nonce_json), sizeof(tx.nonce) - 1);
+    strncpy(tx.gas_price, cJSON_GetStringValue(gas_price_json), sizeof(tx.gas_price) - 1);
+    strncpy(tx.gas_limit, cJSON_GetStringValue(gas_limit_json), sizeof(tx.gas_limit) - 1);
+    strncpy(tx.value, cJSON_GetStringValue(value_json), sizeof(tx.value) - 1);
+
+    // Parse 'to' address
+    const char *to_str = cJSON_GetStringValue(to_json);
+    if (strlen(to_str) != 42 || strncmp(to_str, "0x", 2) != 0) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "INVALID_ADDRESS",
+                                 "Invalid 'to' address format", NULL);
+    }
+    esp_err_t hex_ret = hex_to_bytes(to_str + 2, tx.to, 20);
+    if (hex_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "INVALID_ADDRESS",
+                                 "Failed to parse 'to' address", NULL);
+    }
+
+    // Parse transaction data
+    const char *data_str = cJSON_GetStringValue(data_json);
+    if (data_str && strlen(data_str) > 2 && strncmp(data_str, "0x", 2) == 0) {
+        size_t data_hex_len = strlen(data_str) - 2;
+        tx.data_len = data_hex_len / 2;
+        tx.data = malloc(tx.data_len);
+        if (!tx.data) {
+            cJSON_Delete(json);
+            return send_error_response(req, 500, "INTERNAL_ERROR",
+                                     "Memory allocation failed", NULL);
+        }
+        hex_ret = hex_to_bytes(data_str + 2, tx.data, tx.data_len);
+        if (hex_ret != ESP_OK) {
+            free(tx.data);
+            cJSON_Delete(json);
+            return send_error_response(req, 400, "INVALID_DATA",
+                                     "Failed to parse transaction data", NULL);
+        }
+    } else {
+        tx.data = NULL;
+        tx.data_len = 0;
+    }
+
+    // Load and validate against policy
+    policy_t policy;
+    esp_err_t policy_ret = load_policy(&policy);
+    if (policy_ret != ESP_OK) {
+        if (tx.data) free(tx.data);
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "POLICY_ERROR",
+                                 "Failed to load policy", NULL);
+    }
+
+    esp_err_t validation_ret = validate_eip155_transaction(&tx, &policy);
+    if (validation_ret != ESP_OK) {
+        if (tx.data) free(tx.data);
+        cJSON_Delete(json);
+        return send_error_response(req, 403, "POLICY_VIOLATION",
+                                 "Transaction violates policy", NULL);
+    }
 
     // TODO: Create transaction hash for EIP-155
     // This is a simplified implementation - in production you would need proper RLP encoding
     transaction_hash_t tx_hash;
-    tx_hash.chain_id = chain_id;
+    tx_hash.chain_id = tx.chain_id;
 
     // Create a simple hash from the transaction data (this is not correct EIP-155 encoding)
     char tx_string[1024];
     snprintf(tx_string, sizeof(tx_string),
              "%lu:%s:%s:%s:%s:%s:%s",
-             (unsigned long)chain_id,
+             (unsigned long)tx.chain_id,
              cJSON_GetStringValue(nonce_json),
              cJSON_GetStringValue(gas_price_json),
              cJSON_GetStringValue(gas_limit_json),
@@ -764,6 +1093,7 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
     uint8_t private_key[32];
     esp_err_t key_ret = get_signing_key(private_key);
     if (key_ret != ESP_OK) {
+        if (tx.data) free(tx.data);
         cJSON_Delete(json);
         return send_error_response(req, 500, "KEY_ERROR",
                                  "Failed to retrieve signing key", NULL);
@@ -773,6 +1103,7 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
     ecdsa_signature_t signature;
     esp_err_t sign_ret = crypto_sign_transaction(private_key, &tx_hash, &signature);
     if (sign_ret != ESP_OK) {
+        if (tx.data) free(tx.data);
         cJSON_Delete(json);
         return send_error_response(req, 500, "SIGNING_ERROR",
                                  "Failed to sign transaction", NULL);
@@ -795,6 +1126,7 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
     free(response_str);
     cJSON_Delete(response);
     cJSON_Delete(json);
+    if (tx.data) free(tx.data);
 
     ESP_LOGI(TAG, "EIP-155 transaction signed successfully");
     return send_ret;

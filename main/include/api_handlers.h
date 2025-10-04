@@ -18,6 +18,7 @@ esp_err_t api_handle_auth_config(httpd_req_t *req);
 esp_err_t api_handle_key_config(httpd_req_t *req);
 esp_err_t api_handle_key_status(httpd_req_t *req);
 esp_err_t api_handle_policy_config(httpd_req_t *req);
+esp_err_t api_handle_policy_status(httpd_req_t *req);
 esp_err_t api_handle_wipe(httpd_req_t *req);
 
 // Signing mode endpoints

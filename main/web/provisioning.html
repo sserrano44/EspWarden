@@ -126,10 +126,20 @@
 
         <div class='section'>
             <h3>4. Transaction Policy</h3>
+            <p style='color:#666;font-size:14px;margin-bottom:15px'>Leave fields empty to allow any (permissive mode)</p>
             <form id='policyForm'>
-                <input type='text' id='chains' placeholder='Allowed chains (e.g., 1,10,8453)' required>
-                <input type='text' id='addresses' placeholder='Whitelisted addresses (comma separated)'>
-                <input type='text' id='maxValue' placeholder='Max value in wei (e.g., 100000000000000000)' required>
+                <input type='text' id='chainIds' placeholder='Allowed chains (e.g., 1,137,42161)'>
+                <small style='color:#666;font-size:12px'>Chain IDs: Ethereum=1, Polygon=137, Arbitrum=42161</small>
+
+                <input type='text' id='recipientWhitelist' placeholder='Recipient addresses (0x...)'>
+                <small style='color:#666;font-size:12px'>Addresses that can receive ETH/tokens</small>
+
+                <input type='text' id='erc20Whitelist' placeholder='ERC-20 token contracts (0x...)'>
+                <small style='color:#666;font-size:12px'>Token contracts: USDC, USDT, etc.</small>
+
+                <input type='text' id='contractWhitelist' placeholder='Contract addresses (0x...)'>
+                <small style='color:#666;font-size:12px'>Smart contracts you can interact with</small>
+
                 <button type='submit'>Set Policy</button>
             </form>
             <div id='policyStatus' class='status'></div>
@@ -164,9 +174,43 @@
             }
         }
 
-        /* Check key status on page load */
+        async function checkPolicyStatus() {
+            try {
+                const response = await fetch('/policy/status');
+                const data = await response.json();
+                if (data.hasPolicy) {
+                    // Fill chain IDs
+                    if (data.chainIds && data.chainIds.length > 0) {
+                        document.getElementById('chainIds').value = data.chainIds.join(',');
+                    }
+
+                    // Fill recipient addresses
+                    if (data.recipientWhitelist && data.recipientWhitelist.length > 0) {
+                        document.getElementById('recipientWhitelist').value = data.recipientWhitelist.join(',');
+                    }
+
+                    // Fill ERC-20 token addresses
+                    if (data.erc20Whitelist && data.erc20Whitelist.length > 0) {
+                        document.getElementById('erc20Whitelist').value = data.erc20Whitelist.join(',');
+                    }
+
+                    // Fill contract addresses
+                    if (data.contractWhitelist && data.contractWhitelist.length > 0) {
+                        document.getElementById('contractWhitelist').value = data.contractWhitelist.join(',');
+                    }
+
+                    // Show status message
+                    showStatus('policyStatus', 'Current policy loaded from device', false);
+                }
+            } catch (error) {
+                console.log('Could not fetch policy status:', error);
+            }
+        }
+
+        /* Check key and policy status on page load */
         window.onload = function() {
             checkKeyStatus();
+            checkPolicyStatus();
 
             /* Handle key mode radio button changes */
             document.querySelectorAll('input[name="keyMode"]').forEach(radio => {
@@ -263,14 +307,36 @@
 
         document.getElementById('policyForm').onsubmit = function(e) {
             e.preventDefault();
-            const chains = document.getElementById('chains').value.split(',').map(x => parseInt(x.trim()));
-            const addresses = document.getElementById('addresses').value.split(',').map(x => x.trim()).filter(x => x);
+
+            // Parse chain IDs
+            const chainIds = document.getElementById('chainIds').value.trim();
+            const chains = chainIds ? chainIds.split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x)) : [];
+
+            // Parse recipient addresses
+            const recipients = document.getElementById('recipientWhitelist').value.trim();
+            const recipientList = recipients ? recipients.split(',').map(x => x.trim()).filter(x => x && x.startsWith('0x')) : [];
+
+            // Parse ERC-20 token addresses
+            const erc20 = document.getElementById('erc20Whitelist').value.trim();
+            const erc20List = erc20 ? erc20.split(',').map(x => x.trim()).filter(x => x && x.startsWith('0x')) : [];
+
+            // Parse contract addresses
+            const contracts = document.getElementById('contractWhitelist').value.trim();
+            const contractList = contracts ? contracts.split(',').map(x => x.trim()).filter(x => x && x.startsWith('0x')) : [];
+
             const data = {
-                allowedChains: chains,
-                toWhitelist: addresses,
-                maxValueWei: document.getElementById('maxValue').value
+                chainIds: chains,
+                recipientWhitelist: recipientList,
+                erc20Whitelist: erc20List,
+                contractWhitelist: contractList
             };
-            submitForm('/policy', data, 'policyStatus');
+
+            submitForm('/policy', data, 'policyStatus').then(success => {
+                if (success) {
+                    // Reload policy status to show updated values
+                    setTimeout(checkPolicyStatus, 500);
+                }
+            });
         };
 
         function copyToClipboard() {
