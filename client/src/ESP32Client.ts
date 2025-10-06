@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import https from 'https';
 import { AuthManager } from './AuthManager';
 import { RetryManager } from './RetryManager';
 import { ConfigManager } from './ConfigManager';
@@ -68,21 +69,34 @@ export class ESP32Client {
     }
 
     return this.retryManager.executeWithRetry(async () => {
-      const response = await fetch(url, {
-        method,
-        headers,
-        body: bodyString || undefined,
-        timeout: this.configManager.getTimeout(),
-        // Disable SSL verification for self-signed certificates
-        agent: process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0' ? undefined : undefined
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.configManager.getTimeout());
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw this.createErrorFromResponse(response.status, errorData);
+      try {
+        // Create an HTTPS agent that ignores self-signed certificates
+        const agent = new https.Agent({
+          rejectUnauthorized: false
+        });
+
+        const response = await fetch(url, {
+          method,
+          headers,
+          body: bodyString || undefined,
+          signal: controller.signal,
+          agent: agent
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw this.createErrorFromResponse(response.status, errorData);
+        }
+
+        return response.json() as T;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
       }
-
-      return response.json() as T;
     }, `${method} ${path}`);
   }
 
@@ -182,7 +196,7 @@ export class ESP32Client {
 
     const payload = {
       token: this.authManager.getToken(),
-      tx: transaction
+      ...transaction
     };
 
     return this.makeRequest<SignatureResponse>('POST', '/sign/eip1559', payload, true);
@@ -202,7 +216,7 @@ export class ESP32Client {
 
     const payload = {
       token: this.authManager.getToken(),
-      tx: transaction
+      ...transaction
     };
 
     return this.makeRequest<SignatureResponse>('POST', '/sign/eip155', payload, true);
@@ -249,5 +263,18 @@ export class ESP32Client {
    */
   clearSession(): void {
     this.authManager.clearToken();
+  }
+
+  /**
+   * Get current configuration
+   */
+  getConfig(): Partial<ESP32Config> {
+    return {
+      deviceUrl: this.configManager.getDeviceUrl(),
+      clientId: this.configManager.getClientId(),
+      timeout: this.configManager.getTimeout(),
+      retryOptions: this.configManager.getRetryOptions(),
+      rateLimitOptions: this.configManager.getRateLimitOptions()
+    };
   }
 }

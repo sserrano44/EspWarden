@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ESP32 Remote Signer is a secure, policy-enforced hardware signer for Ethereum transactions. It consists of ESP32 firmware (C/ESP-IDF) and a Node.js client library (TypeScript). The device operates in two modes: provisioning (configuration) and signing (operational), controlled by GPIO jumpers.
+ESP32 Remote Signer is a secure, policy-enforced hardware signer for Ethereum transactions. It consists of ESP32 firmware (C/ESP-IDF) and a Node.js client library (TypeScript). The device operates in two modes: provisioning (configuration) and signing (operational), controlled by the built-in BOOT button.
 
 ## Critical Commands
 
@@ -73,9 +73,9 @@ Currently ~75% complete. Critical unimplemented components that require attentio
 
 ### Mode Switching Logic
 
-The device determines its operational mode at boot via GPIO pin:
-- **Provisioning Mode**: GPIO 2 connected to GND → Allows configuration changes
-- **Signing Mode**: GPIO 2 disconnected → Read-only operation, only signs transactions
+The device determines its operational mode at boot via the BOOT button:
+- **Provisioning Mode**: BOOT button held during power-on/reset → Allows configuration changes
+- **Signing Mode**: Normal boot (BOOT button not pressed) → Read-only operation, only signs transactions
 
 This is enforced in `device_mode.c` and checked by all API handlers in `api_handlers.c`.
 
@@ -120,13 +120,10 @@ Never use development configuration with real funds.
 
 Minimum hardware requirements:
 - ESP32 NodeMCU-32S or compatible
-- 1 jumper wire for provisioning mode
 - USB cable for power/programming
 
-GPIO connections for provisioning:
-```
-GPIO 2 ──── GND
-```
+Entering provisioning mode:
+- Hold the BOOT button while powering on or resetting the device
 
 ## PRD Compliance
 
@@ -145,3 +142,4 @@ Default ports and protocols:
 - WiFi: Configured during provisioning
 
 For development, set `NODE_TLS_REJECT_UNAUTHORIZED=0` to accept self-signed certificates.
+- we should never build an endpoint that returns the private key

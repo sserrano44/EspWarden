@@ -109,44 +109,36 @@ esp_err_t auth_manager_init(void)
     return ESP_OK;
 }
 
-esp_err_t auth_manager_set_auth_key(const char *password)
+esp_err_t auth_manager_set_auth_key(const char *hex_key)
 {
-    if (!password || strlen(password) < 8) {
-        ESP_LOGE(TAG, "Password too short (minimum 8 characters)");
+    if (!hex_key) {
+        ESP_LOGE(TAG, "Auth key cannot be null");
         return ESP_ERR_INVALID_ARG;
     }
 
-    ESP_LOGI(TAG, "Deriving auth key from password...");
-
-    // Use PBKDF2 with SHA-256 for key derivation
-    // In production, use scrypt or argon2 if available
-    uint8_t salt[16];
-    generate_random_bytes(salt, sizeof(salt));
-
-    // Simple PBKDF2 implementation using mbedTLS
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-
-    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (mbedtls_md_setup(&ctx, md_info, 1) != 0) {
-        ESP_LOGE(TAG, "Failed to setup PBKDF2");
-        mbedtls_md_free(&ctx);
-        return ESP_FAIL;
+    size_t key_len = strlen(hex_key);
+    if (key_len != 64) {
+        ESP_LOGE(TAG, "Auth key must be exactly 64 hex characters (got %d)", key_len);
+        return ESP_ERR_INVALID_ARG;
     }
 
-    // Derive key using HMAC-SHA256 (simplified PBKDF2)
-    int iterations = 10000;
-    if (mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
-                                       (const unsigned char *)password, strlen(password),
-                                       salt, sizeof(salt),
-                                       iterations,
-                                       AUTH_KEY_SIZE, auth_state.auth_key) != 0) {
-        ESP_LOGE(TAG, "Failed to derive auth key");
-        mbedtls_md_free(&ctx);
-        return ESP_FAIL;
+    // Validate that all characters are hex
+    for (int i = 0; i < 64; i++) {
+        char c = hex_key[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+            ESP_LOGE(TAG, "Invalid hex character '%c' at position %d", c, i);
+            return ESP_ERR_INVALID_ARG;
+        }
     }
 
-    mbedtls_md_free(&ctx);
+    ESP_LOGI(TAG, "Converting hex key to bytes...");
+
+    // Convert hex string to bytes
+    for (int i = 0; i < AUTH_KEY_SIZE; i++) {
+        char hex_byte[3] = {hex_key[i * 2], hex_key[i * 2 + 1], '\0'};
+        auth_state.auth_key[i] = (uint8_t)strtol(hex_byte, NULL, 16);
+    }
+
     auth_state.auth_key_set = true;
 
     // Save to NVS
@@ -159,10 +151,6 @@ esp_err_t auth_manager_set_auth_key(const char *password)
 
     err = nvs_set_blob(nvs_handle, "auth_key", auth_state.auth_key, AUTH_KEY_SIZE);
     if (err == ESP_OK) {
-        err = nvs_set_blob(nvs_handle, "salt", salt, sizeof(salt));
-    }
-
-    if (err == ESP_OK) {
         err = nvs_commit(nvs_handle);
     }
 
@@ -173,7 +161,7 @@ esp_err_t auth_manager_set_auth_key(const char *password)
         return err;
     }
 
-    ESP_LOGI(TAG, "Auth key successfully derived and stored");
+    ESP_LOGI(TAG, "Auth key successfully stored");
     return ESP_OK;
 }
 
@@ -251,6 +239,14 @@ esp_err_t auth_manager_verify_hmac(const char *client_id, const char *nonce_hex,
 
     snprintf(message, msg_len, "%s%s%s%s", nonce_hex, method, path, body ? body : "");
 
+    // Debug: Show what message is being used for HMAC calculation
+    ESP_LOGI(TAG, "HMAC message: %s", message);
+
+    // Debug: Show auth key (first 16 bytes for security)
+    char auth_key_hex[33];
+    bytes_to_hex(auth_state.auth_key, 16, auth_key_hex);
+    ESP_LOGI(TAG, "Auth key (first 16 bytes): %s", auth_key_hex);
+
     // Calculate HMAC-SHA256
     uint8_t calculated_hmac[32];
     mbedtls_md_context_t ctx;
@@ -284,8 +280,8 @@ esp_err_t auth_manager_verify_hmac(const char *client_id, const char *nonce_hex,
     // Compare HMACs
     if (strcasecmp(calculated_hex, hmac_hex) != 0) {
         ESP_LOGE(TAG, "HMAC verification failed");
-        ESP_LOGD(TAG, "Expected: %s", calculated_hex);
-        ESP_LOGD(TAG, "Received: %s", hmac_hex);
+        ESP_LOGI(TAG, "Expected: %s", calculated_hex);
+        ESP_LOGI(TAG, "Received: %s", hmac_hex);
         auth_manager_record_failure(client_id);
         return ESP_FAIL;
     }

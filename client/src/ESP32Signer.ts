@@ -1,4 +1,4 @@
-import { AbstractSigner, Provider, TransactionRequest, TransactionResponse } from 'ethers';
+import { AbstractSigner, Provider, TransactionRequest, TransactionResponse, Transaction } from 'ethers';
 import { ESP32Client } from './ESP32Client';
 import { ESP32Config, EIP1559Transaction, EIP155Transaction } from './types';
 import { ValidationError } from './errors';
@@ -18,7 +18,8 @@ export class ESP32Signer extends AbstractSigner {
   async getAddress(): Promise<string> {
     if (!this._address) {
       const info = await this.client.getInfo();
-      this._address = info.address;
+      // Normalize the address to handle checksum differences
+      this._address = info.address.toLowerCase();
     }
     return this._address;
   }
@@ -34,7 +35,7 @@ export class ESP32Signer extends AbstractSigner {
     if (populatedTx.maxFeePerGas && populatedTx.maxPriorityFeePerGas) {
       // EIP-1559 transaction
       const eip1559Tx: EIP1559Transaction = {
-        chainId: populatedTx.chainId || 1,
+        chainId: Number(populatedTx.chainId) || 1,
         nonce: this.toHex(populatedTx.nonce),
         maxFeePerGas: this.toHex(populatedTx.maxFeePerGas),
         maxPriorityFeePerGas: this.toHex(populatedTx.maxPriorityFeePerGas),
@@ -56,7 +57,7 @@ export class ESP32Signer extends AbstractSigner {
     } else {
       // Legacy EIP-155 transaction
       const eip155Tx: EIP155Transaction = {
-        chainId: populatedTx.chainId || 1,
+        chainId: Number(populatedTx.chainId) || 1,
         nonce: this.toHex(populatedTx.nonce),
         gasPrice: this.toHex(populatedTx.gasPrice),
         gasLimit: this.toHex(populatedTx.gasLimit),
@@ -165,45 +166,51 @@ export class ESP32Signer extends AbstractSigner {
    * Serialize EIP-1559 transaction with signature
    */
   private serializeEIP1559Transaction(tx: EIP1559Transaction, sig: any): string {
-    // This is a simplified implementation
-    // In a real implementation, you would use RLP encoding
-    const fields = [
-      tx.chainId,
-      tx.nonce,
-      tx.maxPriorityFeePerGas,
-      tx.maxFeePerGas,
-      tx.gasLimit,
-      tx.to,
-      tx.value,
-      tx.data,
-      sig.v,
-      '0x' + sig.r,
-      '0x' + sig.s
-    ];
+    // Create a complete transaction object with the signature
+    const completeTx = {
+      type: 2, // EIP-1559
+      chainId: tx.chainId,
+      nonce: parseInt(tx.nonce),
+      maxFeePerGas: tx.maxFeePerGas,
+      maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+      gasLimit: tx.gasLimit,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      accessList: [],
+      signature: {
+        r: '0x' + sig.r,
+        s: '0x' + sig.s,
+        v: sig.v
+      }
+    };
 
-    // Note: This is a placeholder. Real implementation needs proper RLP encoding
-    throw new Error('Transaction serialization not implemented - use signature.raw from device');
+    // Use ethers to serialize the transaction
+    return Transaction.from(completeTx).serialized;
   }
 
   /**
    * Serialize EIP-155 transaction with signature
    */
   private serializeEIP155Transaction(tx: EIP155Transaction, sig: any): string {
-    // This is a simplified implementation
-    // In a real implementation, you would use RLP encoding
-    const fields = [
-      tx.nonce,
-      tx.gasPrice,
-      tx.gasLimit,
-      tx.to,
-      tx.value,
-      tx.data,
-      sig.v,
-      '0x' + sig.r,
-      '0x' + sig.s
-    ];
+    // Create a complete transaction object with the signature
+    const completeTx = {
+      type: 0, // Legacy transaction
+      chainId: tx.chainId,
+      nonce: parseInt(tx.nonce),
+      gasPrice: tx.gasPrice,
+      gasLimit: tx.gasLimit,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      signature: {
+        r: '0x' + sig.r,
+        s: '0x' + sig.s,
+        v: sig.v
+      }
+    };
 
-    // Note: This is a placeholder. Real implementation needs proper RLP encoding
-    throw new Error('Transaction serialization not implemented - use signature.raw from device');
+    // Use ethers to serialize the transaction
+    return Transaction.from(completeTx).serialized;
   }
 }

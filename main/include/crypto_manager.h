@@ -67,6 +67,22 @@ esp_err_t crypto_verify_signature(const uint8_t public_key[64],
                                  const uint8_t hash[32],
                                  const ecdsa_signature_t *signature);
 
+/**
+ * @brief Hash EIP-1559 transaction for signing
+ * @param tx EIP-1559 transaction structure
+ * @param tx_hash Output transaction hash structure
+ * @return ESP_OK on success, ESP_FAIL on failure
+ */
+esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_hash_t *tx_hash);
+
+/**
+ * @brief Hash EIP-155 transaction for signing
+ * @param tx EIP-155 transaction structure
+ * @param tx_hash Output transaction hash structure
+ * @return ESP_OK on success, ESP_FAIL on failure
+ */
+esp_err_t crypto_hash_eip155_transaction(const eip155_tx_t *tx, transaction_hash_t *tx_hash);
+
 #ifdef __cplusplus
 }
 #endif

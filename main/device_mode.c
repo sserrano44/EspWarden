@@ -10,7 +10,7 @@ esp_err_t device_mode_init(void)
 {
     ESP_LOGI(TAG, "Initializing device mode detection...");
 
-    // Configure GPIO pin for provisioning jumper detection
+    // Configure GPIO pin for provisioning BOOT button detection
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_INPUT,
@@ -23,13 +23,13 @@ esp_err_t device_mode_init(void)
     // Read GPIO pin to determine mode
     int pin_a_level = gpio_get_level(PROVISIONING_PIN_A);
 
-    // If GPIO 2 is shorted to ground (low), enter provisioning mode
+    // If BOOT button is pressed (GPIO 0 low), enter provisioning mode
     if (pin_a_level == 0) {
         current_mode = DEVICE_MODE_PROVISIONING;
-        ESP_LOGW(TAG, "Provisioning jumper detected - entering PROVISIONING MODE");
+        ESP_LOGW(TAG, "BOOT button pressed - entering PROVISIONING MODE");
     } else {
         current_mode = DEVICE_MODE_SIGNING;
-        ESP_LOGI(TAG, "No jumper detected - entering SIGNING MODE");
+        ESP_LOGI(TAG, "BOOT button not pressed - entering SIGNING MODE");
     }
 
     return ESP_OK;

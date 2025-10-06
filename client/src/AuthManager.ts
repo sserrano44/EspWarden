@@ -18,7 +18,17 @@ export class AuthManager {
    */
   generateHMAC(nonce: string, method: string, path: string, body: string = ''): string {
     const message = nonce + method + path + body;
-    const hmac = CryptoJS.HmacSHA256(message, this.authKey);
+
+    // Convert hex key to WordArray for proper HMAC calculation
+    const keyWordArray = CryptoJS.enc.Hex.parse(this.authKey);
+    const hmac = CryptoJS.HmacSHA256(message, keyWordArray);
+
+    // Debug logging
+    console.log(`Client HMAC calculation:`);
+    console.log(`  Message: ${message}`);
+    console.log(`  Auth key: ${this.authKey.substring(0, 32)}...`);
+    console.log(`  HMAC result: ${hmac.toString(CryptoJS.enc.Hex)}`);
+
     return hmac.toString(CryptoJS.enc.Hex);
   }
 
@@ -26,9 +36,15 @@ export class AuthManager {
    * Generate unlock request payload
    */
   generateUnlockRequest(nonce: string): object {
-    const hmac = this.generateHMAC(nonce, 'POST', '/unlock', `{"clientId":"${this.clientId}"}`);
+    // The ESP32 reconstructs the body using cJSON_PrintUnformatted which produces:
+    // {"clientId":"sepolia-test-client","nonce":"nonce_value"}
+    // We need to match this exact format including the nonce
+    const bodyForHmac = `{"clientId":"${this.clientId}","nonce":"${nonce}"}`;
+    const hmac = this.generateHMAC(nonce, 'POST', '/unlock', bodyForHmac);
+
     return {
       clientId: this.clientId,
+      nonce: nonce,
       hmac: hmac
     };
   }

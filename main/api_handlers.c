@@ -136,10 +136,21 @@ esp_err_t api_handle_unlock(httpd_req_t *req)
             nonce = current_nonce;
         }
 
-        // Verify HMAC(nonce || "POST" || "/unlock" || body)
+        // Reconstruct body for HMAC verification (exclude hmac field)
+        cJSON *verification_body = cJSON_CreateObject();
+        cJSON_AddStringToObject(verification_body, "clientId", client_id);
+        if (nonce_json && cJSON_IsString(nonce_json)) {
+            cJSON_AddStringToObject(verification_body, "nonce", nonce);
+        }
+        char *verification_body_str = cJSON_PrintUnformatted(verification_body);
+        cJSON_Delete(verification_body);
+
+        // Verify HMAC(nonce || "POST" || "/unlock" || body_without_hmac)
         esp_err_t verify_result = auth_manager_verify_hmac(
-            client_id, nonce, "POST", "/unlock", buf, hmac
+            client_id, nonce, "POST", "/unlock", verification_body_str, hmac
         );
+
+        free(verification_body_str);
 
         if (verify_result != ESP_OK) {
             cJSON_Delete(json);
@@ -891,25 +902,14 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
                                  "Transaction violates policy", NULL);
     }
 
-    // TODO: Create transaction hash for EIP-1559
-    // This is a simplified implementation - in production you would need proper RLP encoding
+    // Create proper EIP-1559 transaction hash
     transaction_hash_t tx_hash;
-    tx_hash.chain_id = tx.chain_id;
-
-    // Create a simple hash from the transaction data (this is not correct EIP-1559 encoding)
-    char tx_string[1024];
-    snprintf(tx_string, sizeof(tx_string),
-             "%lu:%s:%s:%s:%s:%s:%s:%s",
-             (unsigned long)tx.chain_id,
-             cJSON_GetStringValue(nonce_json),
-             cJSON_GetStringValue(max_fee_json),
-             cJSON_GetStringValue(max_priority_json),
-             cJSON_GetStringValue(gas_limit_json),
-             cJSON_GetStringValue(to_json),
-             cJSON_GetStringValue(value_json),
-             cJSON_GetStringValue(data_json));
-
-    keccak_256((uint8_t*)tx_string, strlen(tx_string), tx_hash.hash);
+    esp_err_t hash_ret = crypto_hash_eip1559_transaction(&tx, &tx_hash);
+    if (hash_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "HASH_ERROR",
+                                 "Failed to create transaction hash", NULL);
+    }
 
     // Get private key
     uint8_t private_key[32];
@@ -1070,24 +1070,14 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
                                  "Transaction violates policy", NULL);
     }
 
-    // TODO: Create transaction hash for EIP-155
-    // This is a simplified implementation - in production you would need proper RLP encoding
+    // Create proper EIP-155 transaction hash
     transaction_hash_t tx_hash;
-    tx_hash.chain_id = tx.chain_id;
-
-    // Create a simple hash from the transaction data (this is not correct EIP-155 encoding)
-    char tx_string[1024];
-    snprintf(tx_string, sizeof(tx_string),
-             "%lu:%s:%s:%s:%s:%s:%s",
-             (unsigned long)tx.chain_id,
-             cJSON_GetStringValue(nonce_json),
-             cJSON_GetStringValue(gas_price_json),
-             cJSON_GetStringValue(gas_limit_json),
-             cJSON_GetStringValue(to_json),
-             cJSON_GetStringValue(value_json),
-             cJSON_GetStringValue(data_json));
-
-    keccak_256((uint8_t*)tx_string, strlen(tx_string), tx_hash.hash);
+    esp_err_t hash_ret = crypto_hash_eip155_transaction(&tx, &tx_hash);
+    if (hash_ret != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error_response(req, 500, "HASH_ERROR",
+                                 "Failed to create transaction hash", NULL);
+    }
 
     // Get private key
     uint8_t private_key[32];
