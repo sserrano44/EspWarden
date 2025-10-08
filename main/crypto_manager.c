@@ -30,13 +30,13 @@ static esp_err_t safe_fields_append(uint8_t *fields_buffer, size_t *fields_offse
 
 esp_err_t crypto_manager_init(void)
 {
-    ESP_LOGI(TAG, "Initializing crypto manager with trezor-crypto");
+    ESP_LOGD(TAG, "Initializing crypto manager with trezor-crypto");
 
     // Initialize random number generator with ESP32 hardware RNG
     // trezor-crypto will use this for key generation
     random_reseed(esp_random());
 
-    ESP_LOGI(TAG, "Crypto manager initialized successfully");
+    ESP_LOGD(TAG, "Crypto manager initialized successfully");
     return ESP_OK;
 }
 
@@ -67,7 +67,7 @@ esp_err_t crypto_generate_private_key(uint8_t private_key[32])
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Generated new secp256k1 private key");
+    ESP_LOGD(TAG, "Generated new secp256k1 private key");
     return ESP_OK;
 }
 
@@ -331,8 +331,6 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
     }
 
     // Debug: Log incoming transaction data
-    ESP_LOGI(TAG, "Hashing EIP1559 tx - chainId: %lu, nonce: %s", tx->chain_id, tx->nonce);
-    ESP_LOGI(TAG, "Hashing EIP1559 tx - value: %s, gasLimit: %s", tx->value, tx->gas_limit);
 
     // RLP encoding buffers with bounds checking
     // Maximum transaction size: type(1) + list_header(3) + fields(~300) = ~304 bytes
@@ -403,14 +401,12 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
 
             // For single byte values < 128, encode directly without RLP length prefix
             if (actual_len == 1 && nonce_bytes[start] < 0x80) {
-                ESP_LOGI(TAG, "Encoding nonce directly: actual_len=%zu, value=0x%02x", actual_len, nonce_bytes[start]);
                 if (safe_fields_append(fields_buffer, &fields_offset, &nonce_bytes[start], 1, MAX_FIELDS_SIZE) != ESP_OK) {
                     xSemaphoreGive(crypto_mutex);
                     return ESP_ERR_NO_MEM;
                 }
             } else {
                 // Multi-byte or >= 128: use RLP string encoding
-                ESP_LOGI(TAG, "Encoding nonce with RLP string: actual_len=%zu, value=0x%02x", actual_len, nonce_bytes[start]);
                 len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
                 if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
                     safe_fields_append(fields_buffer, &fields_offset, &nonce_bytes[start], actual_len, MAX_FIELDS_SIZE) != ESP_OK) {
@@ -578,58 +574,8 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
         return ESP_ERR_NO_MEM;
     }
 
-    // Now encode the list length and assemble final transaction
-    ESP_LOGI(TAG, "=== DETAILED RLP FIELD BREAKDOWN ===");
-
-    // Log each field individually by reconstructing the fields
-    size_t debug_offset = 0;
-    ESP_LOGI(TAG, "Field 1 (chainId): %02x%02x%02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2], fields_buffer[debug_offset+3]);
-    debug_offset += 4; // chainId is 4 bytes (83aa36a7)
-
-    ESP_LOGI(TAG, "Field 2 (nonce): %02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1]);
-    debug_offset += 2; // nonce is 2 bytes (8101)
-
-    ESP_LOGI(TAG, "Field 3 (maxPriorityFeePerGas): %02x%02x%02x%02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
-        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4]);
-    debug_offset += 5; // maxPriorityFeePerGas (843b9aca00)
-
-    ESP_LOGI(TAG, "Field 4 (maxFeePerGas): %02x%02x%02x%02x%02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
-        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4], fields_buffer[debug_offset+5]);
-    debug_offset += 6; // maxFeePerGas (8504a817c800)
-
-    ESP_LOGI(TAG, "Field 5 (gasLimit): %02x%02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2]);
-    debug_offset += 3; // gasLimit (825208)
-
-    ESP_LOGI(TAG, "Field 6 (to): %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
-        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4], fields_buffer[debug_offset+5],
-        fields_buffer[debug_offset+6], fields_buffer[debug_offset+7], fields_buffer[debug_offset+8],
-        fields_buffer[debug_offset+9], fields_buffer[debug_offset+10], fields_buffer[debug_offset+11],
-        fields_buffer[debug_offset+12], fields_buffer[debug_offset+13], fields_buffer[debug_offset+14],
-        fields_buffer[debug_offset+15], fields_buffer[debug_offset+16], fields_buffer[debug_offset+17],
-        fields_buffer[debug_offset+18], fields_buffer[debug_offset+19], fields_buffer[debug_offset+20]);
-    debug_offset += 21; // to address (946c3acdc8...)
-
-    ESP_LOGI(TAG, "Remaining fields: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
-        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4], fields_buffer[debug_offset+5],
-        fields_buffer[debug_offset+6], fields_buffer[debug_offset+7], fields_buffer[debug_offset+8],
-        fields_buffer[debug_offset+9]);
-
-    ESP_LOGI(TAG, "Total fields size: %zu bytes", fields_offset);
-    ESP_LOGI(TAG, "Full fields buffer: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-             fields_buffer[0], fields_buffer[1], fields_buffer[2], fields_buffer[3], fields_buffer[4],
-             fields_buffer[5], fields_buffer[6], fields_buffer[7], fields_buffer[8], fields_buffer[9],
-             fields_buffer[10], fields_buffer[11], fields_buffer[12], fields_buffer[13], fields_buffer[14],
-             fields_buffer[15], fields_buffer[16], fields_buffer[17], fields_buffer[18], fields_buffer[19]);
-
+    // Encode the list length and assemble final transaction
     size_t list_len_prefix = encode_rlp_length(fields_offset, field_buffer, true);
-    ESP_LOGI(TAG, "List length prefix: %zu bytes, value: %02x", list_len_prefix, field_buffer[0]);
 
     // Copy list length prefix to main buffer
     memcpy(&rlp_data[offset], field_buffer, list_len_prefix);
@@ -644,37 +590,10 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
     memcpy(&rlp_data[offset], fields_buffer, fields_offset);
     offset += fields_offset;
 
-    // Log the complete RLP data being hashed
-    ESP_LOGI(TAG, "Complete RLP data being hashed (%zu bytes):", offset);
-    for (size_t i = 0; i < offset; i += 20) {
-        size_t end = (i + 20 < offset) ? i + 20 : offset;
-        ESP_LOGI(TAG, "RLP[%02zu-%02zu]: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-            i, end-1,
-            (i+0 < offset) ? rlp_data[i+0] : 0, (i+1 < offset) ? rlp_data[i+1] : 0,
-            (i+2 < offset) ? rlp_data[i+2] : 0, (i+3 < offset) ? rlp_data[i+3] : 0,
-            (i+4 < offset) ? rlp_data[i+4] : 0, (i+5 < offset) ? rlp_data[i+5] : 0,
-            (i+6 < offset) ? rlp_data[i+6] : 0, (i+7 < offset) ? rlp_data[i+7] : 0,
-            (i+8 < offset) ? rlp_data[i+8] : 0, (i+9 < offset) ? rlp_data[i+9] : 0,
-            (i+10 < offset) ? rlp_data[i+10] : 0, (i+11 < offset) ? rlp_data[i+11] : 0,
-            (i+12 < offset) ? rlp_data[i+12] : 0, (i+13 < offset) ? rlp_data[i+13] : 0,
-            (i+14 < offset) ? rlp_data[i+14] : 0, (i+15 < offset) ? rlp_data[i+15] : 0,
-            (i+16 < offset) ? rlp_data[i+16] : 0, (i+17 < offset) ? rlp_data[i+17] : 0,
-            (i+18 < offset) ? rlp_data[i+18] : 0, (i+19 < offset) ? rlp_data[i+19] : 0);
-    }
 
     // Calculate Keccak-256 hash
     keccak_256(rlp_data, offset, tx_hash->hash);
 
-    // Debug: Log the transaction hash being signed
-    ESP_LOGI(TAG, "ESP32 Transaction hash: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-        tx_hash->hash[0], tx_hash->hash[1], tx_hash->hash[2], tx_hash->hash[3],
-        tx_hash->hash[4], tx_hash->hash[5], tx_hash->hash[6], tx_hash->hash[7],
-        tx_hash->hash[8], tx_hash->hash[9], tx_hash->hash[10], tx_hash->hash[11],
-        tx_hash->hash[12], tx_hash->hash[13], tx_hash->hash[14], tx_hash->hash[15],
-        tx_hash->hash[16], tx_hash->hash[17], tx_hash->hash[18], tx_hash->hash[19],
-        tx_hash->hash[20], tx_hash->hash[21], tx_hash->hash[22], tx_hash->hash[23],
-        tx_hash->hash[24], tx_hash->hash[25], tx_hash->hash[26], tx_hash->hash[27],
-        tx_hash->hash[28], tx_hash->hash[29], tx_hash->hash[30], tx_hash->hash[31]);
 
     tx_hash->chain_id = tx->chain_id;
     tx_hash->tx_type = 2; // EIP-1559 transaction type

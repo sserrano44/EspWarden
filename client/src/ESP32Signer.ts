@@ -45,27 +45,6 @@ export class ESP32Signer extends AbstractSigner {
         data: populatedTx.data || '0x'
       };
 
-      // Debug: Create an unsigned transaction to compute the expected hash
-      const unsignedTx = {
-        type: 2,
-        chainId: eip1559Tx.chainId,
-        nonce: parseInt(eip1559Tx.nonce),
-        maxFeePerGas: eip1559Tx.maxFeePerGas,
-        maxPriorityFeePerGas: eip1559Tx.maxPriorityFeePerGas,
-        gasLimit: eip1559Tx.gasLimit,
-        to: eip1559Tx.to,
-        value: eip1559Tx.value,
-        data: eip1559Tx.data,
-        accessList: []
-      };
-
-      const ethersUnsigned = Transaction.from(unsignedTx);
-      const expectedHash = ethersUnsigned.unsignedHash;
-      console.log('DEBUG: Expected transaction hash (ethers):', expectedHash);
-
-      // Get the raw unsigned serialized data that ethers uses for hashing
-      const ethersUnsignedSerialized = ethersUnsigned.unsignedSerialized;
-      console.log('DEBUG: Ethers unsigned serialized:', ethersUnsignedSerialized);
 
       const signature = await this.client.signEIP1559(eip1559Tx);
 
