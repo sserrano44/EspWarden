@@ -32,6 +32,7 @@ export interface HealthResponse {
   status: string;
   nonce: string;
   rateRemaining: number;
+  signingAddress?: string;
 }
 
 export interface UnlockResponse {

@@ -143,3 +143,4 @@ Default ports and protocols:
 
 For development, set `NODE_TLS_REJECT_UNAUTHORIZED=0` to accept self-signed certificates.
 - we should never build an endpoint that returns the private key
+- ESP-IDF Python virtual environment is at /Users/sebas/esp/esp-idf

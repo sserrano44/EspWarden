@@ -14,6 +14,7 @@ extern "C" {
 typedef struct {
     uint8_t hash[32];   // Keccak-256 hash of the transaction
     uint32_t chain_id;  // Ethereum chain ID for v calculation
+    uint8_t tx_type;    // Transaction type: 0 = Legacy/EIP-155, 2 = EIP-1559
 } transaction_hash_t;
 
 /**

@@ -45,6 +45,28 @@ export class ESP32Signer extends AbstractSigner {
         data: populatedTx.data || '0x'
       };
 
+      // Debug: Create an unsigned transaction to compute the expected hash
+      const unsignedTx = {
+        type: 2,
+        chainId: eip1559Tx.chainId,
+        nonce: parseInt(eip1559Tx.nonce),
+        maxFeePerGas: eip1559Tx.maxFeePerGas,
+        maxPriorityFeePerGas: eip1559Tx.maxPriorityFeePerGas,
+        gasLimit: eip1559Tx.gasLimit,
+        to: eip1559Tx.to,
+        value: eip1559Tx.value,
+        data: eip1559Tx.data,
+        accessList: []
+      };
+
+      const ethersUnsigned = Transaction.from(unsignedTx);
+      const expectedHash = ethersUnsigned.unsignedHash;
+      console.log('DEBUG: Expected transaction hash (ethers):', expectedHash);
+
+      // Get the raw unsigned serialized data that ethers uses for hashing
+      const ethersUnsignedSerialized = ethersUnsigned.unsignedSerialized;
+      console.log('DEBUG: Ethers unsigned serialized:', ethersUnsignedSerialized);
+
       const signature = await this.client.signEIP1559(eip1559Tx);
 
       // Return the raw serialized transaction if available
@@ -140,11 +162,13 @@ export class ESP32Signer extends AbstractSigner {
     }
 
     if (typeof value === 'number') {
-      return '0x' + value.toString(16);
+      const hex = value.toString(16);
+      return '0x' + (hex.length % 2 ? '0' + hex : hex);
     }
 
     if (typeof value === 'bigint') {
-      return '0x' + value.toString(16);
+      const hex = value.toString(16);
+      return '0x' + (hex.length % 2 ? '0' + hex : hex);
     }
 
     if (value && typeof value.toHexString === 'function') {
@@ -156,7 +180,8 @@ export class ESP32Signer extends AbstractSigner {
       if (str.startsWith('0x')) {
         return str;
       }
-      return '0x' + parseInt(str).toString(16);
+      const hex = parseInt(str).toString(16);
+      return '0x' + (hex.length % 2 ? '0' + hex : hex);
     }
 
     return '0x0';
@@ -166,7 +191,8 @@ export class ESP32Signer extends AbstractSigner {
    * Serialize EIP-1559 transaction with signature
    */
   private serializeEIP1559Transaction(tx: EIP1559Transaction, sig: any): string {
-    // Create a complete transaction object with the signature
+    // For EIP-1559 transactions, we need to use yParity instead of v
+    // The ESP32 returns v as 0 or 1 (the recovery ID) which is correct for yParity
     const completeTx = {
       type: 2, // EIP-1559
       chainId: tx.chainId,
@@ -181,7 +207,7 @@ export class ESP32Signer extends AbstractSigner {
       signature: {
         r: '0x' + sig.r,
         s: '0x' + sig.s,
-        v: sig.v
+        yParity: sig.v  // ESP32 returns 0 or 1, use directly as yParity
       }
     };
 
@@ -193,7 +219,8 @@ export class ESP32Signer extends AbstractSigner {
    * Serialize EIP-155 transaction with signature
    */
   private serializeEIP155Transaction(tx: EIP155Transaction, sig: any): string {
-    // Create a complete transaction object with the signature
+    // For EIP-155, the ESP32 returns v = chainId * 2 + 35 + recovery_id
+    // This is the correct v value for legacy transactions
     const completeTx = {
       type: 0, // Legacy transaction
       chainId: tx.chainId,
@@ -206,7 +233,7 @@ export class ESP32Signer extends AbstractSigner {
       signature: {
         r: '0x' + sig.r,
         s: '0x' + sig.s,
-        v: sig.v
+        v: sig.v  // ESP32 returns correct EIP-155 v value
       }
     };
 

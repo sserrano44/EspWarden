@@ -23,12 +23,6 @@ export class AuthManager {
     const keyWordArray = CryptoJS.enc.Hex.parse(this.authKey);
     const hmac = CryptoJS.HmacSHA256(message, keyWordArray);
 
-    // Debug logging
-    console.log(`Client HMAC calculation:`);
-    console.log(`  Message: ${message}`);
-    console.log(`  Auth key: ${this.authKey.substring(0, 32)}...`);
-    console.log(`  HMAC result: ${hmac.toString(CryptoJS.enc.Hex)}`);
-
     return hmac.toString(CryptoJS.enc.Hex);
   }
 

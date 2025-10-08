@@ -9,6 +9,7 @@
 #include "policy_engine.h"
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -17,9 +18,22 @@
 
 static const char *TAG = "API_HANDLERS";
 
+// Rate limiting constants
+#define MAX_REQUESTS_PER_MINUTE 10
+#define RATE_LIMIT_WINDOW_MS (60 * 1000)
+
+// Rate limiting state
+static uint32_t request_count = 0;
+static uint64_t window_start_time = 0;
+static SemaphoreHandle_t rate_limit_mutex = NULL;
+
 // Helper function declarations
 esp_err_t hex_to_bytes(const char *hex_str, uint8_t *bytes, size_t bytes_len);
 static void bytes_to_hex(const uint8_t *bytes, size_t bytes_len, char *hex_str);
+static esp_err_t get_signing_key(uint8_t private_key[32]);
+static esp_err_t get_ethereum_address(char *address_hex, size_t max_len);
+static esp_err_t check_rate_limit(void);
+static uint32_t get_remaining_requests(void);
 
 esp_err_t api_handle_health(httpd_req_t *req)
 {
@@ -29,14 +43,27 @@ esp_err_t api_handle_health(httpd_req_t *req)
     char nonce_hex[NONCE_SIZE * 2 + 1];
     auth_manager_get_nonce(nonce_hex, sizeof(nonce_hex));
 
+    // Get the actual signing address
+    char signing_address[43];
+    esp_err_t addr_ret = get_ethereum_address(signing_address, sizeof(signing_address));
+
     cJSON *json = cJSON_CreateObject();
     cJSON *status = cJSON_CreateString("OK");
     cJSON *nonce = cJSON_CreateString(nonce_hex);
-    cJSON *rate_remaining = cJSON_CreateNumber(10);  // TODO: Get from rate limiter
+    cJSON *rate_remaining = cJSON_CreateNumber(get_remaining_requests());
 
     cJSON_AddItemToObject(json, "status", status);
     cJSON_AddItemToObject(json, "nonce", nonce);
     cJSON_AddItemToObject(json, "rateRemaining", rate_remaining);
+
+    // Add signing address if available
+    if (addr_ret == ESP_OK) {
+        cJSON *address = cJSON_CreateString(signing_address);
+        cJSON_AddItemToObject(json, "signingAddress", address);
+    } else {
+        cJSON *address = cJSON_CreateString("address_derivation_failed");
+        cJSON_AddItemToObject(json, "signingAddress", address);
+    }
 
     char *json_string = cJSON_Print(json);
     esp_err_t ret = send_json_response(req, 200, json_string);
@@ -53,11 +80,20 @@ esp_err_t api_handle_info(httpd_req_t *req)
 
     cJSON *json = cJSON_CreateObject();
     cJSON *fw = cJSON_CreateString(get_firmware_version());
-    cJSON *address = cJSON_CreateString("0x742d35Cc3672C1BfeE3d4D5a0e6E9C4FfBe7E8A8"); // Placeholder
     cJSON *policy_hash = cJSON_CreateString("0x1234567890abcdef1234567890abcdef12345678"); // Placeholder
     cJSON *secure_boot = cJSON_CreateBool(true);
     cJSON *flash_enc = cJSON_CreateBool(true);
     cJSON *mode = cJSON_CreateString(is_provisioning_mode() ? "provisioning" : "signing");
+
+    // Get the actual signing address
+    char signing_address[43];
+    esp_err_t addr_ret = get_ethereum_address(signing_address, sizeof(signing_address));
+    cJSON *address;
+    if (addr_ret == ESP_OK) {
+        address = cJSON_CreateString(signing_address);
+    } else {
+        address = cJSON_CreateString("not_configured");
+    }
 
     cJSON_AddItemToObject(json, "fw", fw);
     cJSON_AddItemToObject(json, "address", address);
@@ -127,7 +163,7 @@ esp_err_t api_handle_unlock(httpd_req_t *req)
         // For initial setup, accept any request
     } else {
         // Verify HMAC
-        ESP_LOGI(TAG, "Verifying HMAC for client: %s", client_id);
+        ESP_LOGD(TAG, "Verifying HMAC for client: %s", client_id);
 
         // Get the current nonce if not provided
         char current_nonce[NONCE_SIZE * 2 + 1];
@@ -159,7 +195,7 @@ esp_err_t api_handle_unlock(httpd_req_t *req)
         }
     }
 
-    ESP_LOGI(TAG, "Authentication successful for client: %s", client_id);
+    ESP_LOGD(TAG, "Authentication successful for client: %s", client_id);
 
     // Create session token
     char token_hex[SESSION_TOKEN_SIZE * 2 + 1];
@@ -767,16 +803,58 @@ static void bytes_to_hex(const uint8_t *bytes, size_t bytes_len, char *hex_str)
     hex_str[bytes_len * 2] = 0;
 }
 
-// Helper function to get private key from storage (placeholder)
+// Helper function to get private key from storage
 static esp_err_t get_signing_key(uint8_t private_key[32])
 {
-    // TODO: Implement secure key retrieval from NVS
-    // For now, generate a deterministic test key
-    ESP_LOGW(TAG, "Using deterministic test key - DO NOT USE IN PRODUCTION");
+    // Check if a private key exists in storage
+    if (!storage_has_private_key()) {
+        ESP_LOGE(TAG, "No private key configured - device must be provisioned first");
+        return ESP_ERR_NOT_FOUND;
+    }
 
-    // Generate a simple test key (in production this would come from secure storage)
-    for (int i = 0; i < 32; i++) {
-        private_key[i] = i + 1;  // Simple pattern for testing
+    // Retrieve the private key from secure storage
+    esp_err_t ret = storage_get_private_key(private_key);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to retrieve private key from storage: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGD(TAG, "Retrieved private key from secure storage");
+    return ESP_OK;
+}
+
+// Helper function to get the Ethereum address from the signing key
+static esp_err_t get_ethereum_address(char *address_hex, size_t max_len)
+{
+    if (!address_hex || max_len < 43) { // 42 chars + null terminator
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Get the private key
+    uint8_t private_key[32];
+    esp_err_t ret = get_signing_key(private_key);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    // Derive public key
+    uint8_t public_key[64];
+    ret = crypto_get_public_key(private_key, public_key);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    // Derive Ethereum address
+    uint8_t address_bytes[20];
+    ret = crypto_get_ethereum_address(public_key, address_bytes);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    // Convert to hex string with 0x prefix
+    snprintf(address_hex, max_len, "0x");
+    for (int i = 0; i < 20; i++) {
+        snprintf(address_hex + 2 + (i * 2), max_len - 2 - (i * 2), "%02x", address_bytes[i]);
     }
 
     return ESP_OK;
@@ -786,17 +864,29 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /sign/eip1559 request");
 
+    // Check rate limiting first
+    esp_err_t rate_check = check_rate_limit();
+    if (rate_check != ESP_OK) {
+        return send_error_response(req, 429, "RATE_LIMITED",
+                                 "Too many requests, try again later", NULL);
+    }
+
     // Check if device is in signing mode
     if (is_provisioning_mode()) {
         return send_error_response(req, 403, "PROVISIONING_MODE",
                                  "Cannot sign transactions in provisioning mode", NULL);
     }
 
-    // Parse JSON request body
+    // Parse JSON request body with strict size limits
     size_t content_len = req->content_len;
-    if (content_len == 0 || content_len > 2048) {
+    if (content_len == 0) {
         return send_error_response(req, 400, "INVALID_REQUEST",
-                                 "Invalid content length", NULL);
+                                 "Empty request body", NULL);
+    }
+    if (content_len > 1024) {  // Stricter limit for production safety
+        ESP_LOGW(TAG, "Request too large: %zu bytes", content_len);
+        return send_error_response(req, 413, "REQUEST_TOO_LARGE",
+                                 "Request body exceeds maximum size", NULL);
     }
 
     char *buffer = malloc(content_len + 1);
@@ -846,6 +936,9 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
     strncpy(tx.max_priority_fee_per_gas, cJSON_GetStringValue(max_priority_json), sizeof(tx.max_priority_fee_per_gas) - 1);
     strncpy(tx.gas_limit, cJSON_GetStringValue(gas_limit_json), sizeof(tx.gas_limit) - 1);
     strncpy(tx.value, cJSON_GetStringValue(value_json), sizeof(tx.value) - 1);
+
+    // Debug: Log received transaction data
+    ESP_LOGD(TAG, "Processing EIP-1559 transaction (chainId: %lu)", tx.chain_id);
 
     // Parse 'to' address
     const char *to_str = cJSON_GetStringValue(to_json);
@@ -902,6 +995,8 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
                                  "Transaction violates policy", NULL);
     }
 
+    // Debug: Log parsed 'to' address
+
     // Create proper EIP-1559 transaction hash
     transaction_hash_t tx_hash;
     esp_err_t hash_ret = crypto_hash_eip1559_transaction(&tx, &tx_hash);
@@ -948,7 +1043,7 @@ esp_err_t api_handle_sign_eip1559(httpd_req_t *req)
     cJSON_Delete(json);
     if (tx.data) free(tx.data);
 
-    ESP_LOGI(TAG, "EIP-1559 transaction signed successfully");
+    ESP_LOGD(TAG, "EIP-1559 transaction signed successfully");
     return send_ret;
 }
 
@@ -956,17 +1051,29 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling /sign/eip155 request");
 
+    // Check rate limiting first
+    esp_err_t rate_check = check_rate_limit();
+    if (rate_check != ESP_OK) {
+        return send_error_response(req, 429, "RATE_LIMITED",
+                                 "Too many requests, try again later", NULL);
+    }
+
     // Check if device is in signing mode
     if (is_provisioning_mode()) {
         return send_error_response(req, 403, "PROVISIONING_MODE",
                                  "Cannot sign transactions in provisioning mode", NULL);
     }
 
-    // Parse JSON request body
+    // Parse JSON request body with strict size limits
     size_t content_len = req->content_len;
-    if (content_len == 0 || content_len > 2048) {
+    if (content_len == 0) {
         return send_error_response(req, 400, "INVALID_REQUEST",
-                                 "Invalid content length", NULL);
+                                 "Empty request body", NULL);
+    }
+    if (content_len > 1024) {  // Stricter limit for production safety
+        ESP_LOGW(TAG, "Request too large: %zu bytes", content_len);
+        return send_error_response(req, 413, "REQUEST_TOO_LARGE",
+                                 "Request body exceeds maximum size", NULL);
     }
 
     char *buffer = malloc(content_len + 1);
@@ -1118,6 +1225,68 @@ esp_err_t api_handle_sign_eip155(httpd_req_t *req)
     cJSON_Delete(json);
     if (tx.data) free(tx.data);
 
-    ESP_LOGI(TAG, "EIP-155 transaction signed successfully");
+    ESP_LOGD(TAG, "EIP-155 transaction signed successfully");
     return send_ret;
+}
+
+// Rate limiting implementation
+static esp_err_t check_rate_limit(void)
+{
+    // Initialize mutex if needed
+    if (rate_limit_mutex == NULL) {
+        rate_limit_mutex = xSemaphoreCreateMutex();
+        if (rate_limit_mutex == NULL) {
+            ESP_LOGE(TAG, "Failed to create rate limit mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (xSemaphoreTake(rate_limit_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "Rate limit mutex timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    uint64_t current_time = esp_timer_get_time() / 1000; // Convert to milliseconds
+
+    // Reset window if enough time has passed
+    if (current_time - window_start_time > RATE_LIMIT_WINDOW_MS) {
+        window_start_time = current_time;
+        request_count = 0;
+    }
+
+    // Check if rate limit exceeded
+    if (request_count >= MAX_REQUESTS_PER_MINUTE) {
+        xSemaphoreGive(rate_limit_mutex);
+        ESP_LOGW(TAG, "Rate limit exceeded: %lu requests in window", request_count);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Increment request count
+    request_count++;
+    xSemaphoreGive(rate_limit_mutex);
+    return ESP_OK;
+}
+
+static uint32_t get_remaining_requests(void)
+{
+    if (rate_limit_mutex == NULL) {
+        return MAX_REQUESTS_PER_MINUTE;
+    }
+
+    if (xSemaphoreTake(rate_limit_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return 0;
+    }
+
+    uint64_t current_time = esp_timer_get_time() / 1000;
+
+    // Reset window if enough time has passed
+    if (current_time - window_start_time > RATE_LIMIT_WINDOW_MS) {
+        xSemaphoreGive(rate_limit_mutex);
+        return MAX_REQUESTS_PER_MINUTE;
+    }
+
+    uint32_t remaining = (request_count < MAX_REQUESTS_PER_MINUTE) ?
+                        (MAX_REQUESTS_PER_MINUTE - request_count) : 0;
+    xSemaphoreGive(rate_limit_mutex);
+    return remaining;
 }
