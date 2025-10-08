@@ -1,8 +1,11 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "crypto_manager.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 // Trezor-crypto includes
 #include "ecdsa.h"
@@ -12,6 +15,18 @@
 #include "memzero.h"
 
 static const char *TAG = "crypto_manager";
+
+// Helper function to safely append data to fields buffer
+static esp_err_t safe_fields_append(uint8_t *fields_buffer, size_t *fields_offset,
+                                   const uint8_t *data, size_t data_len, size_t max_size) {
+    if (*fields_offset + data_len > max_size) {
+        ESP_LOGE(TAG, "Fields buffer overflow: need %zu bytes, have %zu", *fields_offset + data_len, max_size);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(&fields_buffer[*fields_offset], data, data_len);
+    *fields_offset += data_len;
+    return ESP_OK;
+}
 
 esp_err_t crypto_manager_init(void)
 {
@@ -104,6 +119,8 @@ esp_err_t crypto_sign_transaction(const uint8_t private_key[32],
     // Clear the output signature
     memzero(signature, sizeof(ecdsa_signature_t));
 
+    ESP_LOGD(TAG, "Signing transaction hash");
+
     // Sign the transaction hash using secp256k1
     uint8_t sig[64];  // r (32 bytes) + s (32 bytes)
     uint8_t pby;      // Recovery ID
@@ -118,9 +135,11 @@ esp_err_t crypto_sign_transaction(const uint8_t private_key[32],
     memcpy(signature->r, &sig[0], 32);
     memcpy(signature->s, &sig[32], 32);
 
-    // Calculate v for Ethereum (EIP-155)
-    // v = recovery_id + 27 + 2 * chain_id (for EIP-155)
-    if (tx_hash->chain_id == 0) {
+    // Calculate v based on transaction type
+    if (tx_hash->tx_type == 2) {
+        // EIP-1559 transaction: v is just the recovery ID (0 or 1)
+        signature->v = pby;
+    } else if (tx_hash->chain_id == 0) {
         // Legacy transaction (pre-EIP-155)
         signature->v = pby + 27;
     } else {
@@ -128,8 +147,8 @@ esp_err_t crypto_sign_transaction(const uint8_t private_key[32],
         signature->v = pby + 35 + 2 * tx_hash->chain_id;
     }
 
-    ESP_LOGI(TAG, "Transaction signed successfully (chain_id=%lu, v=%d)",
-             tx_hash->chain_id, signature->v);
+    ESP_LOGD(TAG, "Transaction signed successfully (chain_id=%lu, tx_type=%d, recovery_id=%d, v=%d)",
+             tx_hash->chain_id, tx_hash->tx_type, pby, signature->v);
     return ESP_OK;
 }
 
@@ -162,12 +181,22 @@ esp_err_t crypto_verify_signature(const uint8_t public_key[64],
     }
 }
 
-// Helper function to convert hex string to bytes
-static esp_err_t hex_to_bytes_crypto(const char *hex_str, uint8_t *bytes, size_t expected_len)
+// Helper function to convert hex string to bytes (variable length)
+static esp_err_t hex_to_bytes_crypto(const char *hex_str, uint8_t *bytes, size_t max_len)
 {
-    if (!hex_str || !bytes) return ESP_FAIL;
+    // Comprehensive input validation
+    if (!hex_str || !bytes || max_len == 0) {
+        ESP_LOGE(TAG, "Invalid parameters for hex conversion");
+        return ESP_ERR_INVALID_ARG;
+    }
 
     size_t hex_len = strlen(hex_str);
+
+    // Check for reasonable string length limits (prevent DoS)
+    if (hex_len > 1024 || hex_len == 0) {
+        ESP_LOGE(TAG, "Hex string length invalid: %zu", hex_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     // Handle 0x prefix
     const char *start = hex_str;
@@ -176,14 +205,40 @@ static esp_err_t hex_to_bytes_crypto(const char *hex_str, uint8_t *bytes, size_t
         hex_len -= 2;
     }
 
-    if (hex_len != expected_len * 2) return ESP_FAIL;
+    // Check if hex length is even and not too long
+    if (hex_len % 2 != 0) {
+        ESP_LOGE(TAG, "Hex string has odd length: %zu", hex_len);
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    for (size_t i = 0; i < expected_len; i++) {
+    if (hex_len > max_len * 2) {
+        ESP_LOGE(TAG, "Hex string too long: %zu > %zu", hex_len, max_len * 2);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // Clear output buffer
+    memset(bytes, 0, max_len);
+
+    // Parse hex bytes into the end of the buffer (big-endian)
+    size_t byte_count = hex_len / 2;
+    size_t offset = max_len - byte_count;
+
+    for (size_t i = 0; i < byte_count; i++) {
         char byte_str[3] = {start[i * 2], start[i * 2 + 1], '\0'};
+
+        // Validate hex characters
+        if (!isxdigit((unsigned char)byte_str[0]) || !isxdigit((unsigned char)byte_str[1])) {
+            ESP_LOGE(TAG, "Invalid hex character at position %zu", i * 2);
+            return ESP_ERR_INVALID_ARG;
+        }
+
         char *endptr;
         long val = strtol(byte_str, &endptr, 16);
-        if (*endptr != '\0' || val < 0 || val > 255) return ESP_FAIL;
-        bytes[i] = (uint8_t)val;
+        if (*endptr != '\0' || val < 0 || val > 255) {
+            ESP_LOGE(TAG, "Invalid hex byte value: %ld", val);
+            return ESP_ERR_INVALID_ARG;
+        }
+        bytes[offset + i] = (uint8_t)val;
     }
     return ESP_OK;
 }
@@ -242,49 +297,135 @@ static size_t encode_rlp_length(size_t length, uint8_t *buffer, bool is_list)
 
 esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_hash_t *tx_hash)
 {
+    // Comprehensive input validation
     if (!tx || !tx_hash) {
         ESP_LOGE(TAG, "NULL pointer provided");
-        return ESP_FAIL;
+        return ESP_ERR_INVALID_ARG;
     }
 
-    // RLP encoding buffer (should be large enough for any transaction)
-    uint8_t rlp_data[1024];
+    // Validate transaction fields are not empty
+    if (tx->nonce[0] == '\0' || tx->max_priority_fee_per_gas[0] == '\0' ||
+        tx->max_fee_per_gas[0] == '\0' || tx->gas_limit[0] == '\0' || tx->value[0] == '\0') {
+        ESP_LOGE(TAG, "Required transaction fields are empty");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Validate chain ID range (prevent unreasonable values)
+    if (tx->chain_id == 0 || tx->chain_id > 0xFFFFFFFF) {
+        ESP_LOGE(TAG, "Invalid chain ID: %lu", tx->chain_id);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Validate data length if data is provided
+    if (tx->data && tx->data_len > 65536) {  // 64KB limit
+        ESP_LOGE(TAG, "Transaction data too large: %u bytes", tx->data_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // Validate string field lengths
+    if (strlen(tx->nonce) > 128 || strlen(tx->max_priority_fee_per_gas) > 128 ||
+        strlen(tx->max_fee_per_gas) > 128 || strlen(tx->gas_limit) > 128 ||
+        strlen(tx->value) > 128) {
+        ESP_LOGE(TAG, "Transaction field string too long");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // Debug: Log incoming transaction data
+    ESP_LOGI(TAG, "Hashing EIP1559 tx - chainId: %lu, nonce: %s", tx->chain_id, tx->nonce);
+    ESP_LOGI(TAG, "Hashing EIP1559 tx - value: %s, gasLimit: %s", tx->value, tx->gas_limit);
+
+    // RLP encoding buffers with bounds checking
+    // Maximum transaction size: type(1) + list_header(3) + fields(~300) = ~304 bytes
+    #define MAX_RLP_SIZE 512
+    #define MAX_FIELDS_SIZE 400
+
+    static uint8_t rlp_data[MAX_RLP_SIZE];
+    static uint8_t fields_buffer[MAX_FIELDS_SIZE];
+    static SemaphoreHandle_t crypto_mutex = NULL;
+
+    // Initialize mutex on first use
+    if (crypto_mutex == NULL) {
+        crypto_mutex = xSemaphoreCreateMutex();
+        if (crypto_mutex == NULL) {
+            ESP_LOGE(TAG, "Failed to create crypto mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    // Take mutex for thread safety
+    if (xSemaphoreTake(crypto_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to acquire crypto mutex");
+        return ESP_ERR_TIMEOUT;
+    }
+
     size_t offset = 0;
+    size_t fields_offset = 0;
 
     // Temporary buffers for field encoding
     uint8_t field_buffer[64];
+    uint8_t len_prefix_buffer[8];
+    size_t field_len, len_prefix;
 
-    // Start with EIP-2718 transaction type (0x02 for EIP-1559)
+    // Include the 0x02 prefix for EIP-1559 transaction hash calculation
+    if (offset >= MAX_RLP_SIZE) {
+        xSemaphoreGive(crypto_mutex);
+        return ESP_ERR_NO_MEM;
+    }
     rlp_data[offset++] = 0x02;
 
-    // We'll come back to set the list length
-    size_t list_length_offset = offset;
-    offset += 8; // Reserve space for length encoding
-    size_t fields_start = offset;
-
     // Field 1: chainId
-    size_t field_len = encode_rlp_int(tx->chain_id, field_buffer);
-    size_t len_prefix = encode_rlp_length(field_len, &rlp_data[offset], false);
-    offset += len_prefix;
-    memcpy(&rlp_data[offset], field_buffer, field_len);
-    offset += field_len;
+    field_len = encode_rlp_int(tx->chain_id, field_buffer);
+    len_prefix = encode_rlp_length(field_len, len_prefix_buffer, false);
+
+    if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+        safe_fields_append(fields_buffer, &fields_offset, field_buffer, field_len, MAX_FIELDS_SIZE) != ESP_OK) {
+        xSemaphoreGive(crypto_mutex);
+        return ESP_ERR_NO_MEM;
+    }
 
     // Field 2: nonce (hex string to bytes)
     uint8_t nonce_bytes[32];
-    size_t nonce_len = 0;
     if (hex_to_bytes_crypto(tx->nonce, nonce_bytes, 32) == ESP_OK) {
-        // Find actual length (remove leading zeros)
-        while (nonce_len < 32 && nonce_bytes[nonce_len] == 0) nonce_len++;
-        if (nonce_len == 32) nonce_len = 1; // Keep at least one byte
-        else nonce_len = 32 - nonce_len;
+        // Find the starting position (skip leading zeros)
+        size_t start = 0;
+        while (start < 32 && nonce_bytes[start] == 0) start++;
 
-        len_prefix = encode_rlp_length(nonce_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &nonce_bytes[32 - nonce_len], nonce_len);
-        offset += nonce_len;
+        if (start == 32) {
+            // All zeros - encode as empty string (0x80)
+            uint8_t zero_byte = 0x80;
+            if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        } else {
+            // Non-zero value - encode the remaining bytes
+            size_t actual_len = 32 - start;
+
+            // For single byte values < 128, encode directly without RLP length prefix
+            if (actual_len == 1 && nonce_bytes[start] < 0x80) {
+                ESP_LOGI(TAG, "Encoding nonce directly: actual_len=%zu, value=0x%02x", actual_len, nonce_bytes[start]);
+                if (safe_fields_append(fields_buffer, &fields_offset, &nonce_bytes[start], 1, MAX_FIELDS_SIZE) != ESP_OK) {
+                    xSemaphoreGive(crypto_mutex);
+                    return ESP_ERR_NO_MEM;
+                }
+            } else {
+                // Multi-byte or >= 128: use RLP string encoding
+                ESP_LOGI(TAG, "Encoding nonce with RLP string: actual_len=%zu, value=0x%02x", actual_len, nonce_bytes[start]);
+                len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+                if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+                    safe_fields_append(fields_buffer, &fields_offset, &nonce_bytes[start], actual_len, MAX_FIELDS_SIZE) != ESP_OK) {
+                    xSemaphoreGive(crypto_mutex);
+                    return ESP_ERR_NO_MEM;
+                }
+            }
+        }
     } else {
         // Fallback: encode as zero
-        rlp_data[offset++] = 0x80;
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 3: maxPriorityFeePerGas
@@ -296,12 +437,29 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
         if (start == 32) start = 31; // Keep at least one byte
 
         size_t actual_len = 32 - start;
-        len_prefix = encode_rlp_length(actual_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &priority_fee[start], actual_len);
-        offset += actual_len;
+
+        // For single byte values < 128, encode directly without RLP length prefix
+        if (actual_len == 1 && priority_fee[start] < 0x80) {
+            if (safe_fields_append(fields_buffer, &fields_offset, &priority_fee[start], 1, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        } else {
+            // Multi-byte or >= 128: use RLP string encoding
+            len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+            if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+                safe_fields_append(fields_buffer, &fields_offset, &priority_fee[start], actual_len, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        ESP_LOGE(TAG, "Failed to parse maxPriorityFeePerGas: %s", tx->max_priority_fee_per_gas);
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 4: maxFeePerGas
@@ -312,27 +470,58 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
         if (start == 32) start = 31;
 
         size_t actual_len = 32 - start;
-        len_prefix = encode_rlp_length(actual_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &max_fee[start], actual_len);
-        offset += actual_len;
+
+        // For single byte values < 128, encode directly without RLP length prefix
+        if (actual_len == 1 && max_fee[start] < 0x80) {
+            if (safe_fields_append(fields_buffer, &fields_offset, &max_fee[start], 1, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        } else {
+            // Multi-byte or >= 128: use RLP string encoding
+            len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+            if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+                safe_fields_append(fields_buffer, &fields_offset, &max_fee[start], actual_len, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        ESP_LOGE(TAG, "Failed to parse maxFeePerGas: %s", tx->max_fee_per_gas);
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 5: gasLimit (convert from hex string)
     uint64_t gas_limit_val = strtoull(tx->gas_limit, NULL, 0);
     field_len = encode_rlp_int(gas_limit_val, field_buffer);
-    len_prefix = encode_rlp_length(field_len, &rlp_data[offset], false);
-    offset += len_prefix;
-    memcpy(&rlp_data[offset], field_buffer, field_len);
-    offset += field_len;
+
+    // For single byte values < 128, encode directly without RLP length prefix
+    if (field_len == 1 && field_buffer[0] < 0x80) {
+        if (safe_fields_append(fields_buffer, &fields_offset, field_buffer, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        // Multi-byte or >= 128: use RLP string encoding
+        len_prefix = encode_rlp_length(field_len, len_prefix_buffer, false);
+        if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+            safe_fields_append(fields_buffer, &fields_offset, field_buffer, field_len, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     // Field 6: to (20 bytes) - directly use the bytes since to is already uint8_t[20]
-    len_prefix = encode_rlp_length(20, &rlp_data[offset], false);
-    offset += len_prefix;
-    memcpy(&rlp_data[offset], tx->to, 20);
-    offset += 20;
+    len_prefix = encode_rlp_length(20, len_prefix_buffer, false);
+    if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+        safe_fields_append(fields_buffer, &fields_offset, tx->to, 20, MAX_FIELDS_SIZE) != ESP_OK) {
+        xSemaphoreGive(crypto_mutex);
+        return ESP_ERR_NO_MEM;
+    }
 
     // Field 7: value
     uint8_t value_bytes[32];
@@ -342,60 +531,223 @@ esp_err_t crypto_hash_eip1559_transaction(const eip1559_tx_t *tx, transaction_ha
         if (start == 32) start = 31;
 
         size_t actual_len = 32 - start;
-        len_prefix = encode_rlp_length(actual_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &value_bytes[start], actual_len);
-        offset += actual_len;
+
+        // For single byte values < 128, encode directly without RLP length prefix
+        if (actual_len == 1 && value_bytes[start] < 0x80) {
+            if (safe_fields_append(fields_buffer, &fields_offset, &value_bytes[start], 1, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        } else {
+            // Multi-byte or >= 128: use RLP string encoding
+            len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+            if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+                safe_fields_append(fields_buffer, &fields_offset, &value_bytes[start], actual_len, MAX_FIELDS_SIZE) != ESP_OK) {
+                xSemaphoreGive(crypto_mutex);
+                return ESP_ERR_NO_MEM;
+            }
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 8: data (use data_len since data is already uint8_t*)
     if (tx->data && tx->data_len > 0) {
-        len_prefix = encode_rlp_length(tx->data_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], tx->data, tx->data_len);
-        offset += tx->data_len;
+        len_prefix = encode_rlp_length(tx->data_len, len_prefix_buffer, false);
+        if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE) != ESP_OK ||
+            safe_fields_append(fields_buffer, &fields_offset, tx->data, tx->data_len, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
     } else {
-        rlp_data[offset++] = 0x80; // Empty string
+        uint8_t zero_byte = 0x80; // Empty string
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 9: accessList (empty for now)
-    rlp_data[offset++] = 0xc0; // Empty list
+    uint8_t empty_list = 0xc0; // Empty list
+    if (safe_fields_append(fields_buffer, &fields_offset, &empty_list, 1, MAX_FIELDS_SIZE) != ESP_OK) {
+        xSemaphoreGive(crypto_mutex);
+        return ESP_ERR_NO_MEM;
+    }
 
-    // Now encode the list length
-    size_t fields_length = offset - fields_start;
-    size_t actual_len_prefix = encode_rlp_length(fields_length, field_buffer, true);
+    // Now encode the list length and assemble final transaction
+    ESP_LOGI(TAG, "=== DETAILED RLP FIELD BREAKDOWN ===");
 
-    // Move data to make room for proper length prefix
-    memmove(&rlp_data[list_length_offset + actual_len_prefix], &rlp_data[fields_start], fields_length);
-    memcpy(&rlp_data[list_length_offset], field_buffer, actual_len_prefix);
-    offset = list_length_offset + actual_len_prefix + fields_length;
+    // Log each field individually by reconstructing the fields
+    size_t debug_offset = 0;
+    ESP_LOGI(TAG, "Field 1 (chainId): %02x%02x%02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2], fields_buffer[debug_offset+3]);
+    debug_offset += 4; // chainId is 4 bytes (83aa36a7)
+
+    ESP_LOGI(TAG, "Field 2 (nonce): %02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1]);
+    debug_offset += 2; // nonce is 2 bytes (8101)
+
+    ESP_LOGI(TAG, "Field 3 (maxPriorityFeePerGas): %02x%02x%02x%02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
+        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4]);
+    debug_offset += 5; // maxPriorityFeePerGas (843b9aca00)
+
+    ESP_LOGI(TAG, "Field 4 (maxFeePerGas): %02x%02x%02x%02x%02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
+        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4], fields_buffer[debug_offset+5]);
+    debug_offset += 6; // maxFeePerGas (8504a817c800)
+
+    ESP_LOGI(TAG, "Field 5 (gasLimit): %02x%02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2]);
+    debug_offset += 3; // gasLimit (825208)
+
+    ESP_LOGI(TAG, "Field 6 (to): %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
+        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4], fields_buffer[debug_offset+5],
+        fields_buffer[debug_offset+6], fields_buffer[debug_offset+7], fields_buffer[debug_offset+8],
+        fields_buffer[debug_offset+9], fields_buffer[debug_offset+10], fields_buffer[debug_offset+11],
+        fields_buffer[debug_offset+12], fields_buffer[debug_offset+13], fields_buffer[debug_offset+14],
+        fields_buffer[debug_offset+15], fields_buffer[debug_offset+16], fields_buffer[debug_offset+17],
+        fields_buffer[debug_offset+18], fields_buffer[debug_offset+19], fields_buffer[debug_offset+20]);
+    debug_offset += 21; // to address (946c3acdc8...)
+
+    ESP_LOGI(TAG, "Remaining fields: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        fields_buffer[debug_offset], fields_buffer[debug_offset+1], fields_buffer[debug_offset+2],
+        fields_buffer[debug_offset+3], fields_buffer[debug_offset+4], fields_buffer[debug_offset+5],
+        fields_buffer[debug_offset+6], fields_buffer[debug_offset+7], fields_buffer[debug_offset+8],
+        fields_buffer[debug_offset+9]);
+
+    ESP_LOGI(TAG, "Total fields size: %zu bytes", fields_offset);
+    ESP_LOGI(TAG, "Full fields buffer: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+             fields_buffer[0], fields_buffer[1], fields_buffer[2], fields_buffer[3], fields_buffer[4],
+             fields_buffer[5], fields_buffer[6], fields_buffer[7], fields_buffer[8], fields_buffer[9],
+             fields_buffer[10], fields_buffer[11], fields_buffer[12], fields_buffer[13], fields_buffer[14],
+             fields_buffer[15], fields_buffer[16], fields_buffer[17], fields_buffer[18], fields_buffer[19]);
+
+    size_t list_len_prefix = encode_rlp_length(fields_offset, field_buffer, true);
+    ESP_LOGI(TAG, "List length prefix: %zu bytes, value: %02x", list_len_prefix, field_buffer[0]);
+
+    // Copy list length prefix to main buffer
+    memcpy(&rlp_data[offset], field_buffer, list_len_prefix);
+    offset += list_len_prefix;
+
+    // Copy all fields to main buffer with bounds checking
+    if (offset + fields_offset > MAX_RLP_SIZE) {
+        ESP_LOGE(TAG, "RLP buffer overflow: need %zu bytes, have %d", offset + fields_offset, MAX_RLP_SIZE);
+        xSemaphoreGive(crypto_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(&rlp_data[offset], fields_buffer, fields_offset);
+    offset += fields_offset;
+
+    // Log the complete RLP data being hashed
+    ESP_LOGI(TAG, "Complete RLP data being hashed (%zu bytes):", offset);
+    for (size_t i = 0; i < offset; i += 20) {
+        size_t end = (i + 20 < offset) ? i + 20 : offset;
+        ESP_LOGI(TAG, "RLP[%02zu-%02zu]: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+            i, end-1,
+            (i+0 < offset) ? rlp_data[i+0] : 0, (i+1 < offset) ? rlp_data[i+1] : 0,
+            (i+2 < offset) ? rlp_data[i+2] : 0, (i+3 < offset) ? rlp_data[i+3] : 0,
+            (i+4 < offset) ? rlp_data[i+4] : 0, (i+5 < offset) ? rlp_data[i+5] : 0,
+            (i+6 < offset) ? rlp_data[i+6] : 0, (i+7 < offset) ? rlp_data[i+7] : 0,
+            (i+8 < offset) ? rlp_data[i+8] : 0, (i+9 < offset) ? rlp_data[i+9] : 0,
+            (i+10 < offset) ? rlp_data[i+10] : 0, (i+11 < offset) ? rlp_data[i+11] : 0,
+            (i+12 < offset) ? rlp_data[i+12] : 0, (i+13 < offset) ? rlp_data[i+13] : 0,
+            (i+14 < offset) ? rlp_data[i+14] : 0, (i+15 < offset) ? rlp_data[i+15] : 0,
+            (i+16 < offset) ? rlp_data[i+16] : 0, (i+17 < offset) ? rlp_data[i+17] : 0,
+            (i+18 < offset) ? rlp_data[i+18] : 0, (i+19 < offset) ? rlp_data[i+19] : 0);
+    }
 
     // Calculate Keccak-256 hash
     keccak_256(rlp_data, offset, tx_hash->hash);
-    tx_hash->chain_id = tx->chain_id;
 
-    ESP_LOGI(TAG, "EIP-1559 transaction hash calculated (chain_id=%lu)", tx->chain_id);
+    // Debug: Log the transaction hash being signed
+    ESP_LOGI(TAG, "ESP32 Transaction hash: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        tx_hash->hash[0], tx_hash->hash[1], tx_hash->hash[2], tx_hash->hash[3],
+        tx_hash->hash[4], tx_hash->hash[5], tx_hash->hash[6], tx_hash->hash[7],
+        tx_hash->hash[8], tx_hash->hash[9], tx_hash->hash[10], tx_hash->hash[11],
+        tx_hash->hash[12], tx_hash->hash[13], tx_hash->hash[14], tx_hash->hash[15],
+        tx_hash->hash[16], tx_hash->hash[17], tx_hash->hash[18], tx_hash->hash[19],
+        tx_hash->hash[20], tx_hash->hash[21], tx_hash->hash[22], tx_hash->hash[23],
+        tx_hash->hash[24], tx_hash->hash[25], tx_hash->hash[26], tx_hash->hash[27],
+        tx_hash->hash[28], tx_hash->hash[29], tx_hash->hash[30], tx_hash->hash[31]);
+
+    tx_hash->chain_id = tx->chain_id;
+    tx_hash->tx_type = 2; // EIP-1559 transaction type
+
+    // Release mutex
+    xSemaphoreGive(crypto_mutex);
+
+    ESP_LOGD(TAG, "EIP-1559 transaction hash calculated (chain_id=%lu)", tx->chain_id);
     return ESP_OK;
 }
 
 esp_err_t crypto_hash_eip155_transaction(const eip155_tx_t *tx, transaction_hash_t *tx_hash)
 {
+    // Comprehensive input validation
     if (!tx || !tx_hash) {
         ESP_LOGE(TAG, "NULL pointer provided");
-        return ESP_FAIL;
+        return ESP_ERR_INVALID_ARG;
     }
 
-    // RLP encoding buffer
-    uint8_t rlp_data[1024];
-    size_t offset = 0;
-    uint8_t field_buffer[64];
+    // Validate transaction fields are not empty
+    if (tx->nonce[0] == '\0' || tx->gas_price[0] == '\0' ||
+        tx->gas_limit[0] == '\0' || tx->value[0] == '\0') {
+        ESP_LOGE(TAG, "Required transaction fields are empty");
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    // Reserve space for list length
-    size_t list_length_offset = offset;
-    offset += 8;
-    size_t fields_start = offset;
+    // Validate chain ID range
+    if (tx->chain_id == 0 || tx->chain_id > 0xFFFFFFFF) {
+        ESP_LOGE(TAG, "Invalid chain ID: %lu", tx->chain_id);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Validate data length if data is provided
+    if (tx->data && tx->data_len > 65536) {  // 64KB limit
+        ESP_LOGE(TAG, "Transaction data too large: %u bytes", tx->data_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // Validate string field lengths
+    if (strlen(tx->nonce) > 128 || strlen(tx->gas_price) > 128 ||
+        strlen(tx->gas_limit) > 128 || strlen(tx->value) > 128) {
+        ESP_LOGE(TAG, "Transaction field string too long");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // RLP encoding buffers with bounds checking
+    #define MAX_RLP_SIZE_155 512
+    #define MAX_FIELDS_SIZE_155 400
+
+    static uint8_t rlp_data[MAX_RLP_SIZE_155];
+    static uint8_t fields_buffer[MAX_FIELDS_SIZE_155];
+    static SemaphoreHandle_t crypto_mutex_155 = NULL;
+
+    // Initialize mutex on first use
+    if (crypto_mutex_155 == NULL) {
+        crypto_mutex_155 = xSemaphoreCreateMutex();
+        if (crypto_mutex_155 == NULL) {
+            ESP_LOGE(TAG, "Failed to create crypto mutex for EIP-155");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    // Take mutex for thread safety
+    if (xSemaphoreTake(crypto_mutex_155, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to acquire crypto mutex for EIP-155");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    size_t offset = 0;
+    size_t fields_offset = 0;
+    uint8_t field_buffer[64];
+    uint8_t len_prefix_buffer[8];
+    size_t field_len, len_prefix;
 
     // Field 1: nonce
     uint8_t nonce_bytes[32];
@@ -405,12 +757,18 @@ esp_err_t crypto_hash_eip155_transaction(const eip155_tx_t *tx, transaction_hash
         if (start == 32) start = 31;
 
         size_t actual_len = 32 - start;
-        size_t len_prefix = encode_rlp_length(actual_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &nonce_bytes[start], actual_len);
-        offset += actual_len;
+        len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+        if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+            safe_fields_append(fields_buffer, &fields_offset, &nonce_bytes[start], actual_len, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 2: gasPrice
@@ -421,27 +779,37 @@ esp_err_t crypto_hash_eip155_transaction(const eip155_tx_t *tx, transaction_hash
         if (start == 32) start = 31;
 
         size_t actual_len = 32 - start;
-        size_t len_prefix = encode_rlp_length(actual_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &gas_price[start], actual_len);
-        offset += actual_len;
+        len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+        if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+            safe_fields_append(fields_buffer, &fields_offset, &gas_price[start], actual_len, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 3: gasLimit (convert from hex string)
     uint64_t gas_limit_val = strtoull(tx->gas_limit, NULL, 0);
-    size_t field_len = encode_rlp_int(gas_limit_val, field_buffer);
-    size_t len_prefix = encode_rlp_length(field_len, &rlp_data[offset], false);
-    offset += len_prefix;
-    memcpy(&rlp_data[offset], field_buffer, field_len);
-    offset += field_len;
+    field_len = encode_rlp_int(gas_limit_val, field_buffer);
+    len_prefix = encode_rlp_length(field_len, len_prefix_buffer, false);
+    if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+        safe_fields_append(fields_buffer, &fields_offset, field_buffer, field_len, MAX_FIELDS_SIZE_155) != ESP_OK) {
+        xSemaphoreGive(crypto_mutex_155);
+        return ESP_ERR_NO_MEM;
+    }
 
     // Field 4: to (directly use the bytes since to is already uint8_t[20])
-    len_prefix = encode_rlp_length(20, &rlp_data[offset], false);
-    offset += len_prefix;
-    memcpy(&rlp_data[offset], tx->to, 20);
-    offset += 20;
+    len_prefix = encode_rlp_length(20, len_prefix_buffer, false);
+    if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+        safe_fields_append(fields_buffer, &fields_offset, tx->to, 20, MAX_FIELDS_SIZE_155) != ESP_OK) {
+        xSemaphoreGive(crypto_mutex_155);
+        return ESP_ERR_NO_MEM;
+    }
 
     // Field 5: value
     uint8_t value_bytes[32];
@@ -451,47 +819,82 @@ esp_err_t crypto_hash_eip155_transaction(const eip155_tx_t *tx, transaction_hash
         if (start == 32) start = 31;
 
         size_t actual_len = 32 - start;
-        len_prefix = encode_rlp_length(actual_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], &value_bytes[start], actual_len);
-        offset += actual_len;
+        len_prefix = encode_rlp_length(actual_len, len_prefix_buffer, false);
+        if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+            safe_fields_append(fields_buffer, &fields_offset, &value_bytes[start], actual_len, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // Field 6: data (use data_len since data is already uint8_t*)
     if (tx->data && tx->data_len > 0) {
-        len_prefix = encode_rlp_length(tx->data_len, &rlp_data[offset], false);
-        offset += len_prefix;
-        memcpy(&rlp_data[offset], tx->data, tx->data_len);
-        offset += tx->data_len;
+        len_prefix = encode_rlp_length(tx->data_len, len_prefix_buffer, false);
+        if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+            safe_fields_append(fields_buffer, &fields_offset, tx->data, tx->data_len, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     } else {
-        rlp_data[offset++] = 0x80;
+        uint8_t zero_byte = 0x80;
+        if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE_155) != ESP_OK) {
+            xSemaphoreGive(crypto_mutex_155);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // EIP-155: Add chain_id, 0, 0 for replay protection
     field_len = encode_rlp_int(tx->chain_id, field_buffer);
-    len_prefix = encode_rlp_length(field_len, &rlp_data[offset], false);
-    offset += len_prefix;
-    memcpy(&rlp_data[offset], field_buffer, field_len);
-    offset += field_len;
+    len_prefix = encode_rlp_length(field_len, len_prefix_buffer, false);
+    if (safe_fields_append(fields_buffer, &fields_offset, len_prefix_buffer, len_prefix, MAX_FIELDS_SIZE_155) != ESP_OK ||
+        safe_fields_append(fields_buffer, &fields_offset, field_buffer, field_len, MAX_FIELDS_SIZE_155) != ESP_OK) {
+        xSemaphoreGive(crypto_mutex_155);
+        return ESP_ERR_NO_MEM;
+    }
 
     // Two empty values for EIP-155
-    rlp_data[offset++] = 0x80;  // Empty r
-    rlp_data[offset++] = 0x80;  // Empty s
+    uint8_t zero_byte = 0x80;
+    if (safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE_155) != ESP_OK ||  // Empty r
+        safe_fields_append(fields_buffer, &fields_offset, &zero_byte, 1, MAX_FIELDS_SIZE_155) != ESP_OK) {  // Empty s
+        xSemaphoreGive(crypto_mutex_155);
+        return ESP_ERR_NO_MEM;
+    }
 
-    // Encode list length
-    size_t fields_length = offset - fields_start;
-    size_t actual_len_prefix = encode_rlp_length(fields_length, field_buffer, true);
+    // Encode list length and assemble final transaction
+    size_t list_len_prefix = encode_rlp_length(fields_offset, field_buffer, true);
 
-    memmove(&rlp_data[list_length_offset + actual_len_prefix], &rlp_data[fields_start], fields_length);
-    memcpy(&rlp_data[list_length_offset], field_buffer, actual_len_prefix);
-    offset = list_length_offset + actual_len_prefix + fields_length;
+    // Copy list length prefix to main buffer
+    if (offset + list_len_prefix > MAX_RLP_SIZE_155) {
+        ESP_LOGE(TAG, "RLP buffer overflow for list prefix");
+        xSemaphoreGive(crypto_mutex_155);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(&rlp_data[offset], field_buffer, list_len_prefix);
+    offset += list_len_prefix;
+
+    // Copy all fields to main buffer with bounds checking
+    if (offset + fields_offset > MAX_RLP_SIZE_155) {
+        ESP_LOGE(TAG, "RLP buffer overflow: need %zu bytes, have %d", offset + fields_offset, MAX_RLP_SIZE_155);
+        xSemaphoreGive(crypto_mutex_155);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(&rlp_data[offset], fields_buffer, fields_offset);
+    offset += fields_offset;
 
     // Calculate Keccak-256 hash
     keccak_256(rlp_data, offset, tx_hash->hash);
     tx_hash->chain_id = tx->chain_id;
+    tx_hash->tx_type = 0; // Legacy/EIP-155 transaction type
 
-    ESP_LOGI(TAG, "EIP-155 transaction hash calculated (chain_id=%lu)", tx->chain_id);
+    // Release mutex
+    xSemaphoreGive(crypto_mutex_155);
+
+    ESP_LOGD(TAG, "EIP-155 transaction hash calculated (chain_id=%lu)", tx->chain_id);
     return ESP_OK;
 }
