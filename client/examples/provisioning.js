@@ -28,19 +28,25 @@ async function provisioningExample() {
     });
     console.log('✅ WiFi configured');
 
-    console.log('\nStep 3: Set authentication password...');
+    console.log('\nStep 3: Set device hostname...');
+    await client.configureHostname({
+      hostname: 'my-esp32-signer'   // Replace with your desired hostname
+    });
+    console.log('✅ Hostname configured (will be accessible as my-esp32-signer.local)');
+
+    console.log('\nStep 4: Set authentication password...');
     await client.configureAuth({
       password: 'your-strong-provisioning-password' // Replace with a strong password
     });
     console.log('✅ Authentication configured');
 
-    console.log('\nStep 4: Generate private key...');
+    console.log('\nStep 5: Generate private key...');
     await client.configureKey({
       mode: 'generate' // Use 'import' to import existing key
     });
     console.log('✅ Private key generated');
 
-    console.log('\nStep 5: Configure transaction policy...');
+    console.log('\nStep 6: Configure transaction policy...');
     await client.configurePolicy({
       allowedChains: [1, 10, 8453], // Ethereum, Optimism, Base
       toWhitelist: [

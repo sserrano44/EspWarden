@@ -58,6 +58,17 @@ esp_err_t mdns_manager_set_mode(mdns_device_mode_t mode, uint16_t https_port);
  */
 esp_err_t mdns_manager_set_hostname(const char *hostname);
 
+/**
+ * @brief Update device hostname and persist to storage
+ *
+ * Changes the advertised hostname, saves it to storage, and restarts mDNS
+ * if currently running.
+ *
+ * @param hostname New hostname (must not be NULL or empty)
+ * @return ESP_OK on success, error code otherwise
+ */
+esp_err_t mdns_manager_update_hostname(const char *hostname);
+
 #ifdef __cplusplus
 }
 #endif

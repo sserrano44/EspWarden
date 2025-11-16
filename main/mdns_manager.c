@@ -6,6 +6,7 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "mdns.h"
+#include "storage_manager.h"
 
 static const char *TAG = "mdns_mgr";
 
@@ -192,21 +193,14 @@ static void on_sta_disconnected(void* arg, esp_event_base_t event_base, int32_t 
 
 static void on_ap_start(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
-    if (s_mode == MDNS_MODE_PROVISIONING) {
-        ESP_LOGI(TAG, "AP started, starting mDNS in provisioning mode");
-        esp_err_t ret = start_mdns_service();
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start mDNS service: %s", esp_err_to_name(ret));
-        }
-    }
+    // mDNS not needed in provisioning mode - users access via 192.168.4.1
+    ESP_LOGI(TAG, "AP started (mDNS disabled in provisioning mode)");
 }
 
 static void on_ap_stop(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
-    if (s_mode == MDNS_MODE_PROVISIONING) {
-        ESP_LOGI(TAG, "AP stopped, stopping mDNS");
-        stop_mdns_service();
-    }
+    // mDNS not needed in provisioning mode - users access via 192.168.4.1
+    ESP_LOGI(TAG, "AP stopped (mDNS disabled in provisioning mode)");
 }
 
 // Public API implementation
@@ -214,9 +208,23 @@ esp_err_t mdns_manager_init(const char *hostname, mdns_device_mode_t mode, uint1
 {
     esp_err_t ret;
 
-    // Validate parameters
-    if (hostname && strlen(hostname) > 0) {
-        strlcpy(s_hostname, hostname, sizeof(s_hostname));
+    // Load hostname from storage first, then use parameter as fallback
+    if (storage_has_hostname()) {
+        esp_err_t storage_ret = storage_get_hostname(s_hostname, sizeof(s_hostname));
+        if (storage_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Loaded hostname from storage: %s", s_hostname);
+        } else {
+            ESP_LOGW(TAG, "Failed to load hostname from storage, using fallback");
+            if (hostname && strlen(hostname) > 0) {
+                strlcpy(s_hostname, hostname, sizeof(s_hostname));
+            }
+        }
+    } else {
+        // No stored hostname, use provided parameter or keep default
+        if (hostname && strlen(hostname) > 0) {
+            strlcpy(s_hostname, hostname, sizeof(s_hostname));
+        }
+        ESP_LOGI(TAG, "No stored hostname found, using: %s", s_hostname);
     }
 
     s_mode = mode;
@@ -360,4 +368,22 @@ esp_err_t mdns_manager_set_hostname(const char *hostname)
     }
 
     return ESP_OK;
+}
+
+esp_err_t mdns_manager_update_hostname(const char *hostname)
+{
+    if (!hostname || strlen(hostname) == 0) {
+        ESP_LOGE(TAG, "Invalid hostname");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Save to storage first
+    esp_err_t ret = storage_set_hostname(hostname);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save hostname to storage: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Update runtime hostname and restart mDNS if needed
+    return mdns_manager_set_hostname(hostname);
 }

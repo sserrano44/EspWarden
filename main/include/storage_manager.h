@@ -21,6 +21,11 @@ esp_err_t storage_set_policy(const policy_t *policy);
 esp_err_t storage_get_policy(policy_t *policy);
 bool storage_has_policy(void);
 
+// Hostname storage
+esp_err_t storage_set_hostname(const char *hostname);
+esp_err_t storage_get_hostname(char *hostname, size_t max_len);
+bool storage_has_hostname(void);
+
 #ifdef __cplusplus
 }
 #endif

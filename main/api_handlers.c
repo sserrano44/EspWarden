@@ -7,6 +7,7 @@
 #include "crypto_manager.h"
 #include "storage_manager.h"
 #include "policy_engine.h"
+#include "mdns_manager.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -34,6 +35,7 @@ static esp_err_t get_signing_key(uint8_t private_key[32]);
 static esp_err_t get_ethereum_address(char *address_hex, size_t max_len);
 static esp_err_t check_rate_limit(void);
 static uint32_t get_remaining_requests(void);
+static bool is_valid_hostname(const char *hostname);
 
 esp_err_t api_handle_health(httpd_req_t *req)
 {
@@ -277,6 +279,88 @@ esp_err_t api_handle_wifi_config(httpd_req_t *req)
     cJSON *response = cJSON_CreateObject();
     cJSON *success = cJSON_CreateBool(true);
     cJSON_AddItemToObject(response, "success", success);
+
+    char *response_string = cJSON_Print(response);
+    esp_err_t send_ret = send_json_response(req, 200, response_string);
+
+    free(response_string);
+    cJSON_Delete(response);
+
+    return send_ret;
+}
+
+esp_err_t api_handle_hostname_config(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Handling /hostname configuration request");
+
+    // Only allow in provisioning mode
+    if (!is_provisioning_mode()) {
+        return send_error_response(req, 403, "FORBIDDEN",
+                                 "Hostname configuration only allowed in provisioning mode", NULL);
+    }
+
+    // Read request body
+    char buf[256];
+    int total_len = req->content_len;
+    int cur_len = 0;
+    int received = 0;
+
+    if (total_len >= sizeof(buf)) {
+        return send_error_response(req, 400, "PAYLOAD_TOO_LARGE",
+                                 "Request payload too large", NULL);
+    }
+
+    while (cur_len < total_len) {
+        received = httpd_req_recv(req, buf + cur_len, total_len - cur_len);
+        if (received <= 0) {
+            return send_error_response(req, 400, "INVALID_REQUEST",
+                                     "Failed to receive request body", NULL);
+        }
+        cur_len += received;
+    }
+    buf[total_len] = '\0';
+
+    // Parse JSON
+    cJSON *json = cJSON_Parse(buf);
+    if (json == NULL) {
+        return send_error_response(req, 400, "INVALID_JSON",
+                                 "Invalid JSON in request body", NULL);
+    }
+
+    cJSON *hostname_item = cJSON_GetObjectItem(json, "hostname");
+
+    if (!cJSON_IsString(hostname_item)) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "MISSING_HOSTNAME",
+                                 "Missing or invalid hostname field", NULL);
+    }
+
+    const char *hostname = hostname_item->valuestring;
+
+    // Validate hostname
+    if (!is_valid_hostname(hostname)) {
+        cJSON_Delete(json);
+        return send_error_response(req, 400, "INVALID_HOSTNAME",
+                                 "Hostname must be 1-63 alphanumeric characters (hyphens allowed, but not at start/end)", NULL);
+    }
+
+    // Update hostname in mDNS manager (this also saves to storage)
+    esp_err_t ret = mdns_manager_update_hostname(hostname);
+    cJSON_Delete(json);
+
+    if (ret != ESP_OK) {
+        return send_error_response(req, 500, "UPDATE_FAILED",
+                                 "Failed to update hostname", NULL);
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON *success = cJSON_CreateBool(true);
+    cJSON *message = cJSON_CreateString("Hostname updated successfully");
+    cJSON *current_hostname = cJSON_CreateString(hostname);
+
+    cJSON_AddItemToObject(response, "success", success);
+    cJSON_AddItemToObject(response, "message", message);
+    cJSON_AddItemToObject(response, "hostname", current_hostname);
 
     char *response_string = cJSON_Print(response);
     esp_err_t send_ret = send_json_response(req, 200, response_string);
@@ -1289,4 +1373,37 @@ static uint32_t get_remaining_requests(void)
                         (MAX_REQUESTS_PER_MINUTE - request_count) : 0;
     xSemaphoreGive(rate_limit_mutex);
     return remaining;
+}
+
+static bool is_valid_hostname(const char *hostname)
+{
+    if (!hostname) {
+        return false;
+    }
+
+    size_t len = strlen(hostname);
+
+    // Length check: 1-63 characters (RFC 1123)
+    if (len == 0 || len > 63) {
+        return false;
+    }
+
+    // Cannot start or end with hyphen
+    if (hostname[0] == '-' || hostname[len-1] == '-') {
+        return false;
+    }
+
+    // Check each character
+    for (size_t i = 0; i < len; i++) {
+        char c = hostname[i];
+        // Must be alphanumeric or hyphen
+        if (!((c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') ||
+              (c == '-'))) {
+            return false;
+        }
+    }
+
+    return true;
 }

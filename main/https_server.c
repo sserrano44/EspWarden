@@ -92,6 +92,18 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
     return api_handle_wifi_config(req);
 }
 
+// Hostname configuration - POST /hostname (provisioning mode only)
+static esp_err_t hostname_post_handler(httpd_req_t *req)
+{
+    if (!is_provisioning_mode()) {
+        return send_error_response(req, 403, "MODE_READ_ONLY",
+                                 "Hostname configuration not allowed in signing mode",
+                                 "DEVICE_IN_SIGNING_MODE");
+    }
+
+    return api_handle_hostname_config(req);
+}
+
 // Auth configuration - POST /auth (provisioning mode only)
 static esp_err_t auth_post_handler(httpd_req_t *req)
 {
@@ -316,6 +328,14 @@ esp_err_t https_server_start(void)
         .user_ctx  = NULL
     };
     httpd_register_uri_handler(server, &wifi_uri);
+
+    httpd_uri_t hostname_uri = {
+        .uri       = "/hostname",
+        .method    = HTTP_POST,
+        .handler   = hostname_post_handler,
+        .user_ctx  = NULL
+    };
+    httpd_register_uri_handler(server, &hostname_uri);
 
     httpd_uri_t auth_uri = {
         .uri       = "/auth",

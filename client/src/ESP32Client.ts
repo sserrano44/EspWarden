@@ -14,7 +14,8 @@ import {
   PolicyConfig,
   WiFiCredentials,
   AuthConfig,
-  KeyConfig
+  KeyConfig,
+  HostnameConfig
 } from './types';
 import {
   ESP32SignerError,
@@ -234,6 +235,13 @@ export class ESP32Client {
    */
   async configureAuth(authConfig: AuthConfig): Promise<{ success: boolean }> {
     return this.makeRequest('POST', '/auth', authConfig);
+  }
+
+  /**
+   * Configure hostname (provisioning mode only)
+   */
+  async configureHostname(hostnameConfig: HostnameConfig): Promise<{ success: boolean }> {
+    return this.makeRequest('POST', '/hostname', hostnameConfig);
   }
 
   /**

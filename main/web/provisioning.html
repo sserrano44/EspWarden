@@ -87,7 +87,21 @@
         </div>
 
         <div class='section'>
-            <h3>2. Authentication Key</h3>
+            <h3>2. Device Hostname</h3>
+            <p style='color:#666;font-size:14px;margin-bottom:15px'>Set custom hostname for mDNS discovery (e.g., "mydevice" → "mydevice.local")</p>
+            <div id='hostnameInfo' style='margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:4px;display:none'>
+                <strong>Current Hostname:</strong> <span id='currentHostname'></span>.local
+            </div>
+            <form id='hostnameForm'>
+                <input type='text' id='hostname' placeholder='Device hostname (e.g., mydevice)' maxlength='63' pattern='[a-zA-Z0-9-]+' required>
+                <small style='color:#666;font-size:12px'>Letters, numbers, and hyphens only. No spaces or special characters.</small>
+                <button type='submit'>Set Hostname</button>
+            </form>
+            <div id='hostnameStatus' class='status'></div>
+        </div>
+
+        <div class='section'>
+            <h3>3. Authentication Key</h3>
             <form id='authForm'>
                 <input type='password' id='authKey' placeholder='256-bit hex key (64 characters)' maxlength='64' required>
                 <small style='color:#666;font-size:12px'>Generate: <code>openssl rand -hex 32</code></small>
@@ -97,7 +111,7 @@
         </div>
 
         <div class='section'>
-            <h3>3. Signing Key Management</h3>
+            <h3>4. Signing Key Management</h3>
             <div id='keyInfo' style='margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:4px;display:none'>
                 <strong>Current Address:</strong> <span id='currentAddress'></span>
             </div>
@@ -125,7 +139,7 @@
         </div>
 
         <div class='section'>
-            <h3>4. Transaction Policy</h3>
+            <h3>5. Transaction Policy</h3>
             <p style='color:#666;font-size:14px;margin-bottom:15px'>Leave fields empty to allow any (permissive mode)</p>
             <form id='policyForm'>
                 <input type='text' id='chainIds' placeholder='Allowed chains (e.g., 1,137,42161)'>
@@ -146,7 +160,7 @@
         </div>
 
         <div class='section'>
-            <h3>5. Complete Setup</h3>
+            <h3>6. Complete Setup</h3>
             <p>After configuring all settings, remove the provisioning jumper and restart the device.</p>
             <button onclick='reboot()'>Restart Device</button>
         </div>
@@ -207,10 +221,25 @@
             }
         }
 
+        async function checkHostnameStatus() {
+            try {
+                const response = await fetch('/info');
+                const data = await response.json();
+                if (data.hostname) {
+                    document.getElementById('currentHostname').textContent = data.hostname;
+                    document.getElementById('hostnameInfo').style.display = 'block';
+                    document.getElementById('hostname').placeholder = 'Current: ' + data.hostname;
+                }
+            } catch (error) {
+                console.log('Could not fetch hostname info:', error);
+            }
+        }
+
         /* Check key and policy status on page load */
         window.onload = function() {
             checkKeyStatus();
             checkPolicyStatus();
+            checkHostnameStatus();
 
             /* Handle key mode radio button changes */
             document.querySelectorAll('input[name="keyMode"]').forEach(radio => {
@@ -266,6 +295,29 @@
                 return;
             }
             submitForm('/auth', {key: key}, 'authStatus');
+        };
+
+        document.getElementById('hostnameForm').onsubmit = function(e) {
+            e.preventDefault();
+            const hostname = document.getElementById('hostname').value.trim().toLowerCase();
+
+            // Validate hostname format
+            if (!hostname || hostname.length === 0 || hostname.length > 63) {
+                showStatus('hostnameStatus', 'Hostname must be 1-63 characters', true);
+                return;
+            }
+
+            if (!/^[a-zA-Z0-9-]+$/.test(hostname) || hostname.startsWith('-') || hostname.endsWith('-')) {
+                showStatus('hostnameStatus', 'Invalid hostname format', true);
+                return;
+            }
+
+            submitForm('/hostname', {hostname: hostname}, 'hostnameStatus').then(success => {
+                if (success) {
+                    // Reload hostname status to show updated value
+                    setTimeout(checkHostnameStatus, 500);
+                }
+            });
         };
 
         document.getElementById('keyForm').onsubmit = async function(e) {

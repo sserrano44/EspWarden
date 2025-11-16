@@ -52,6 +52,14 @@ npm test            # Run tests (when implemented)
 npm run lint        # Check TypeScript code style
 ```
 
+**Client Library Features:**
+- **ESP32Client**: Direct API access with authentication handling
+- **ESP32Signer**: ethers.js-compatible Signer for seamless integration
+- **Provisioning Methods**: `configureWiFi()`, `configureHostname()`, `configureAuth()`, `configureKey()`, `configurePolicy()`
+- **Transaction Signing**: EIP-1559 and EIP-155 support with automatic policy validation
+
+**Examples:** See `/client/examples/` for complete provisioning and signing workflows.
+
 ## Architecture & Implementation Status
 
 ### Dual-Architecture System
@@ -78,6 +86,17 @@ The device determines its operational mode at boot via the BOOT button:
 - **Signing Mode**: Normal boot (BOOT button not pressed) → Read-only operation, only signs transactions
 
 This is enforced in `device_mode.c` and checked by all API handlers in `api_handlers.c`.
+
+### Provisioning Configuration Options
+
+**Available in Provisioning Mode Only:**
+- **WiFi Credentials**: Network SSID and password via `/wifi` endpoint
+- **Device Hostname**: Custom hostname for mDNS discovery via `/hostname` endpoint
+- **Authentication Key**: HMAC authentication key via `/auth` endpoint
+- **Signing Key**: Generate or import private key via `/key` endpoint
+- **Transaction Policy**: Whitelisting rules via `/policy` endpoint
+
+**Web Interface**: Complete provisioning available at `https://192.168.4.1/` with guided setup.
 
 ### API Authentication Flow
 
@@ -134,9 +153,25 @@ Implementation must follow requirements in `PRD_v0.md`:
 - Secure boot and flash encryption in production
 - No sensitive data in logs
 
-## Port Configuration
+## Network Configuration & Discovery
 
-Default ports and protocols:
+### mDNS Hostname Support
+The device supports configurable hostnames for network discovery:
+
+**Provisioning Mode (AP Mode):**
+- Device creates WiFi access point "ESP_Warden_Setup"
+- Always accessible at fixed IP: `192.168.4.1`
+- mDNS disabled (not needed - direct IP access)
+- Hostname can be configured via `/hostname` API or web interface
+
+**Signing Mode (WiFi Client):**
+- Connects to user's WiFi network
+- mDNS enabled for hostname.local discovery
+- Default hostname: "espwarden" → accessible as `espwarden.local`
+- Custom hostname: "mysigner" → accessible as `mysigner.local`
+- Hostname persists across device reboots
+
+### Default Ports and Protocols
 - ESP32 HTTPS Server: Port 443 (self-signed cert)
 - Serial Monitor: 115200 baud
 - WiFi: Configured during provisioning

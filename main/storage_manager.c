@@ -7,6 +7,7 @@
 static const char *TAG = "STORAGE_MANAGER";
 static const char *PRIVATE_KEY_NVS_KEY = "private_key";
 static const char *POLICY_NVS_KEY = "policy";
+static const char *HOSTNAME_NVS_KEY = "mdns_hostname";
 
 esp_err_t storage_manager_init(void)
 {
@@ -182,4 +183,85 @@ bool storage_has_policy(void)
     nvs_close(nvs_handle);
 
     return (err == ESP_OK && required_size == sizeof(policy_t));
+}
+
+esp_err_t storage_set_hostname(const char *hostname)
+{
+    if (!hostname) {
+        ESP_LOGE(TAG, "Hostname is NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t hostname_len = strlen(hostname);
+    if (hostname_len == 0 || hostname_len > 63) {
+        ESP_LOGE(TAG, "Invalid hostname length: %zu (must be 1-63 characters)", hostname_len);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error opening NVS handle: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_str(nvs_handle, HOSTNAME_NVS_KEY, hostname);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error saving hostname: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    err = nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error committing hostname: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Hostname saved successfully: %s", hostname);
+    return ESP_OK;
+}
+
+esp_err_t storage_get_hostname(char *hostname, size_t max_len)
+{
+    if (!hostname || max_len == 0) {
+        ESP_LOGE(TAG, "Hostname buffer is NULL or zero length");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot open NVS handle for reading hostname");
+        return err;
+    }
+
+    size_t required_size = max_len;
+    err = nvs_get_str(nvs_handle, HOSTNAME_NVS_KEY, hostname, &required_size);
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Hostname not found in storage");
+        return err;
+    }
+
+    ESP_LOGD(TAG, "Hostname retrieved from storage: %s", hostname);
+    return ESP_OK;
+}
+
+bool storage_has_hostname(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    size_t required_size = 0;
+    err = nvs_get_str(nvs_handle, HOSTNAME_NVS_KEY, NULL, &required_size);
+    nvs_close(nvs_handle);
+
+    return (err == ESP_OK && required_size > 1); // At least 1 char + null terminator
 }

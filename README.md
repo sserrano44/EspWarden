@@ -16,6 +16,7 @@ This is **NOT** a tamper-proof HSM. This device is suitable for hot balances wit
 - 🛡️ **Rate limiting** - Configurable request limits and abuse prevention
 - 📦 **Node.js client** - Drop-in ethers.js Signer replacement
 - 🔄 **Dual mode operation** - Provisioning mode for setup, signing mode for operation
+- 🏠 **mDNS hostname support** - Configurable network discovery via hostname.local
 
 ## Quick Start
 
@@ -98,6 +99,7 @@ See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
    - Or directly visit: `https://192.168.4.1`
    - Complete setup form:
      - WiFi credentials for your network
+     - Device hostname (optional, defaults to "espwarden")
      - 256-bit authentication key (64 hex characters)
      - Generate signing key
      - Set transaction policy (chains, addresses, limits)
@@ -105,7 +107,7 @@ See [Emulator Setup Guide](docs/EMULATOR_SETUP.md) for details.
 3. **Complete Setup:**
    - Click "Restart Device" or remove GPIO 2 jumper and power cycle
    - Device will connect to your WiFi network
-   - Use device IP for signing operations
+   - Access device via IP address or mDNS hostname (e.g., `espwarden.local` or `mysigner.local`)
 
 #### Alternative: API Configuration
 
@@ -122,6 +124,7 @@ const client = new ESP32Client({
 
 // Configure via API endpoints
 await client.configureWiFi({ ssid: 'YourNetwork', password: 'pass' });
+await client.configureHostname({ hostname: 'my-esp32-signer' });
 await client.configureAuth({ key: 'your-auth-key' });
 await client.configureKey({ mode: 'generate' });
 await client.configurePolicy({ /* policy config */ });
@@ -136,9 +139,9 @@ const { JsonRpcProvider } = require('ethers');
 // Create provider
 const provider = new JsonRpcProvider('https://mainnet.infura.io/v3/your-key');
 
-// Create ESP32 signer
+// Create ESP32 signer (using mDNS hostname or IP address)
 const signer = new ESP32Signer({
-  deviceUrl: 'https://192.168.1.100',
+  deviceUrl: 'https://my-esp32-signer.local', // or 'https://192.168.1.100'
   authKey: 'your-256-bit-hex-auth-key',
   clientId: 'trading-bot-1'
 }, provider);
@@ -164,6 +167,7 @@ console.log('Transaction hash:', tx.hash);
 
 #### Provisioning Mode Only
 - `POST /wifi` - Configure WiFi credentials
+- `POST /hostname` - Set device hostname for mDNS discovery
 - `POST /auth` - Set authentication password
 - `POST /key` - Generate or import private key
 - `POST /policy` - Set transaction policy
@@ -203,6 +207,56 @@ await client.getHealth();
 await client.getInfo();
 await client.signEIP1559(transaction);
 ```
+
+## Network Discovery
+
+### mDNS Hostname Support
+
+The ESP32 Remote Signer supports configurable mDNS hostnames for easy network discovery:
+
+**Provisioning Mode:**
+- Device accessible at fixed IP: `192.168.4.1`
+- mDNS disabled (not needed in AP mode)
+- Hostname configurable via web interface or API
+
+**Signing Mode:**
+- Device joins your WiFi network
+- mDNS enabled for hostname.local discovery
+- Default: `espwarden.local`
+- Custom: `your-custom-name.local`
+
+**Configuration:**
+
+Via Web Interface:
+```
+1. Connect to device WiFi: ESP32-Signer-XXXX
+2. Open https://192.168.4.1
+3. Set hostname in "Device Hostname" section
+4. Complete other provisioning steps
+5. Device accessible as hostname.local after reboot
+```
+
+Via API:
+```javascript
+await client.configureHostname({ hostname: 'trading-bot-1' });
+// Device will be accessible as trading-bot-1.local
+```
+
+Via Client Library:
+```javascript
+// Use hostname for persistent device access
+const signer = new ESP32Signer({
+  deviceUrl: 'https://trading-bot-1.local',
+  authKey: 'your-auth-key',
+  clientId: 'client-1'
+}, provider);
+```
+
+**Benefits:**
+- No need to track changing IP addresses
+- Persistent device identity across DHCP renewals
+- Human-readable device identification
+- Works with any mDNS-capable network
 
 ## Security Model
 
@@ -358,8 +412,9 @@ open htmlcov/index.html
 
 1. **Device not responding:**
    - Check WiFi connectivity
-   - Verify correct IP address
-   - Check if device is in correct mode
+   - Try both IP address and mDNS hostname (e.g., `device.local`)
+   - Verify device is in correct mode (provisioning vs signing)
+   - Ensure mDNS is enabled on your network
 
 2. **Authentication failures:**
    - Verify auth key is correct 256-bit hex string
@@ -380,6 +435,13 @@ open htmlcov/index.html
    - Regenerate certificates: `cd main/certs && openssl req -newkey rsa:2048 -nodes -keyout server_key.pem -x509 -days 3650 -out server_cert.pem -subj "/CN=ESP32RemoteSigner"`
    - Rebuild firmware: `make clean && make dev-build && make flash`
    - For development, set `NODE_TLS_REJECT_UNAUTHORIZED=0` to accept self-signed certs
+
+6. **mDNS hostname not resolving:**
+   - Verify hostname was set during provisioning
+   - Check that device is in signing mode (mDNS disabled in provisioning mode)
+   - Ensure your network supports mDNS/Bonjour
+   - Try device IP address as fallback
+   - On Windows, install Bonjour service or use IP address
 
 ### Debug Mode
 

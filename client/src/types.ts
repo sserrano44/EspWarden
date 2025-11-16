@@ -92,3 +92,7 @@ export interface KeyConfig {
   seed?: string;
   privkey?: string;
 }
+
+export interface HostnameConfig {
+  hostname: string;
+}
