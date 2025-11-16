@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ESP32 Remote Signer is a secure, policy-enforced hardware signer for Ethereum transactions. It consists of ESP32 firmware (C/ESP-IDF) and a Node.js client library (TypeScript). The device operates in two modes: provisioning (configuration) and signing (operational), controlled by the built-in BOOT button.
+EspWarden is a secure, policy-enforced hardware signer for Ethereum transactions. It consists of ESP32 firmware (C/ESP-IDF) and a Node.js client library (TypeScript). The device operates in two modes: provisioning (configuration) and signing (operational), controlled by the built-in BOOT button.
 
 ## Critical Commands
 

@@ -1,4 +1,4 @@
-# ESP32 Remote Signer
+# EspWarden - ESP32 Remote Signer
 
 A secure, policy-enforced remote signer for Ethereum transactions using ESP32 hardware. This project provides a low-cost alternative to expensive Hardware Security Modules (HSMs) for market-making bots and automated trading systems.
 
