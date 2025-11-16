@@ -10,6 +10,7 @@
 #include "wifi_manager.h"
 #include "https_server.h"
 #include "auth_manager.h"
+#include "mdns_manager.h"
 
 static const char *TAG = "ESP32_SIGNER";
 
@@ -43,6 +44,11 @@ void app_main(void)
 
     // Initialize WiFi
     ESP_ERROR_CHECK(wifi_manager_init());
+
+    // Initialize mDNS
+    mdns_device_mode_t mdns_mode = (mode == DEVICE_MODE_PROVISIONING) ?
+                                   MDNS_MODE_PROVISIONING : MDNS_MODE_SIGNING;
+    ESP_ERROR_CHECK(mdns_manager_init("espwarden", mdns_mode, 443));
 
     // Start HTTPS server
     ESP_ERROR_CHECK(https_server_start());

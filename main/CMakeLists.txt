@@ -11,6 +11,7 @@ set(COMPONENT_SRCS
     "policy_engine.c"
     "rate_limiter.c"
     "api_handlers.c"
+    "mdns_manager.c"
 )
 
 # Add emulator stubs if building for emulator
@@ -31,6 +32,7 @@ idf_component_register(
         nvs_flash
         esp_wifi
         esp_netif
+        esp_event
         esp_http_server
         mbedtls
         esp_https_server
@@ -39,5 +41,6 @@ idf_component_register(
         esp_timer
         app_update
         esp_driver_gpio
+        mdns
         trezor-crypto
 )
